@@ -8,7 +8,7 @@ window.__ModuleLoader__.load({
     const NS = 'chatActions';
     /** Build marker: bumped on every behaviour change so the running page can
      *  prove which bundle it actually loaded (see console + toolbar tooltip). */
-    const BUILD = 'v8.0-single-queue-strip';
+    const BUILD = 'v8.1-queue-wake';
     const ASK_KIND = 'chat-actions-ask';
     const ASK_ID = 'dsh-chat-actions/ask';
     const TOOLS_ID = 'chat-actions-tools';
@@ -768,11 +768,12 @@ window.__ModuleLoader__.load({
         if (!first || busy !== null) return;
         setBusy(first.id);
         try {
-          // Waking makes this bar unmount (the agent becomes running); the
-          // plugin-level sweeper removes the sentinel row afterwards.
           await wakeQueue(first.id);
-        } catch (_error) {
-          notifyError(formatT(t, 'queue.sendFailed'));
+        } catch (error) {
+          // Surface the reason instead of one opaque sentence: this path is the
+          // only way a paused queue can move, so a silent failure is fatal.
+          const detail = error && error.message ? String(error.message) : '';
+          notifyError(formatT(t, 'queue.sendFailed') + (detail ? ' · ' + detail : ''));
         } finally {
           setBusy(null);
         }
@@ -943,8 +944,8 @@ window.__ModuleLoader__.load({
             }, formatT(t, 'queue.count', { n: rowCount }) + ' · '
               + formatT(t, running ? 'queue.sending' : 'queue.paused')),
             smallButton(formatT(t, 'queue.send') + ' ↓', () => sendNext(), {
-              // While a turn runs the host claims the queue by itself; the manual
-              // send only exists for the paused state this plugin was asked for.
+              // Always clickable while paused: this is the only path that moves
+              // a paused queue. While a turn runs the host claims it by itself.
               disabled: busy !== null || running || queue.length === 0,
               title: formatT(t, 'queue.sendHint')
             })
@@ -1108,24 +1109,53 @@ window.__ModuleLoader__.load({
         return binding && binding.session ? binding.session : undefined;
       };
 
-      /** Send text as a steering prompt; wakes an idle agent too. */
+      /**
+       * Deliver one prompt exactly the way the composer does: register a
+       * submission, then `prompt(content, mode, signal, requestId)`.
+       *
+       * `beginSubmission` is not cosmetic — the composer always pairs it with
+       * the prompt, and mode `queue` is what makes the host append the message
+       * to `next-turn` and WAKE the driver, which is how a paused conversation
+       * starts its next turn.
+       */
       const sendAsPrompt = async (sessionId, text, mode, requestId) => {
         const session = sessionOf(sessionId);
         if (!session || typeof session.prompt !== 'function') {
-          throw new Error('session is not attached (open the conversation first)');
+          console.warn('[chat-actions] send: no session facade for', sessionId);
+          throw new Error('session-not-attached');
         }
+        const resolvedMode = mode || 'queue';
+        let handle;
+        if (typeof session.beginSubmission === 'function') {
+          try {
+            handle = session.beginSubmission({
+              mode: resolvedMode,
+              text,
+              attachments: [],
+              onRetire: () => {}
+            });
+          } catch (error) {
+            console.warn('[chat-actions] beginSubmission failed (continuing):', error);
+            handle = undefined;
+          }
+        }
+        const id = (handle && handle.requestId) || requestId || newRequestId();
         const result = await session.prompt(
           [{ type: 'text', text }],
-          mode || 'steer',
+          resolvedMode,
           undefined,
-          requestId || newRequestId()
+          id
         );
         if (!result || result.ok !== true) {
-          const message = result && result.error && result.error.message
-            ? String(result.error.message)
-            : (result && result.error && result.error.code ? String(result.error.code) : 'failed');
+          try { if (handle && typeof handle.abandon === 'function') handle.abandon(); } catch (_error) { /* ignore */ }
+          const error = result && result.error;
+          const message = error && (error.message || error.code)
+            ? String(error.message || error.code)
+            : 'prompt-failed';
+          console.warn('[chat-actions] prompt rejected:', result && result.error);
           throw new Error(message);
         }
+        return id;
       };
 
       /**
@@ -1268,6 +1298,11 @@ window.__ModuleLoader__.load({
       const sentinelIds = new Set();          // rpcIds hidden from the bar
       const sentinelSession = new Map();      // rpcId -> sessionId
       const sentinelStarted = new Map();      // rpcId -> startedAt (ms)
+      /** Sessions whose queue is waiting on a wake. The supported send path
+       *  (`conversation.send`) does not hand back the rpcId, so the sweeper also
+       *  matches the sentinel by its text for as long as a wake is outstanding. */
+      const wakePending = new Map();          // sessionId -> startedAt (ms)
+      const WAKE_TTL_MS = 90_000;
 
       const inboxSnapshotOf = (sessionId) => {
         try {
@@ -1286,11 +1321,36 @@ window.__ModuleLoader__.load({
       };
 
       const sweepSentinels = () => {
-        if (sentinelSession.size === 0) return;
         const now = Date.now();
+        // Sessions woken through `conversation.send`: match the sentinel by text,
+        // because that path never returns the rpcId the row is keyed by.
+        for (const [sessionId, started] of [...wakePending]) {
+          if (now - started > WAKE_TTL_MS) {
+            wakePending.delete(sessionId);
+            continue;
+          }
+          const inbox = inboxSnapshotOf(sessionId);
+          const rows = (inbox && inbox['next-turn']) || [];
+          const sentinelRow = rows.find((candidate) => textOf(candidate && candidate.content).trim() === SENTINEL_TEXT);
+          if (!sentinelRow) {
+            // Either the host already claimed it (the wake worked) or it has not
+            // landed yet; either way there is nothing left to clean up.
+            if (!rows.some((candidate) => textOf(candidate && candidate.content).trim() === SENTINEL_TEXT)) {
+              wakePending.delete(sessionId);
+            }
+            continue;
+          }
+          const conversation = conversationOf(sessionId);
+          if (!conversation || typeof conversation.updateQueue !== 'function') continue;
+          Promise.resolve()
+            .then(() => conversation.updateQueue(sentinelRow.id, { kind: 'remove' }))
+            .then(() => wakePending.delete(sessionId), () => { /* retry on the next tick */ });
+        }
+
+        if (sentinelSession.size === 0) return;
         for (const [rpcId, sessionId] of [...sentinelSession]) {
           const started = sentinelStarted.get(rpcId) || now;
-          if (now - started > 90000) {
+          if (now - started > WAKE_TTL_MS) {
             forgetSentinel(rpcId);
             continue;
           }
@@ -1313,6 +1373,42 @@ window.__ModuleLoader__.load({
         const timer = window.setInterval(sweepSentinels, 800);
         return () => window.clearInterval(timer);
       }, 'chat-actions: sentinel sweeper');
+
+      /**
+       * Wake a paused conversation so the Host claims its oldest queued message.
+       *
+       * The preferred path is the conversation service's own `send()`, which is
+       * exactly what the composer's text sender calls (`prompt(content, 'queue')`
+       * on the scoped session). The session-facade call stays as a fallback for
+       * hosts that do not expose `send`; it needs a live binding and is the path
+       * that silently did nothing before.
+       */
+      const wakeSession = async (sessionId) => {
+        const conversation = conversationOf(sessionId);
+        const errors = [];
+        if (conversation && typeof conversation.send === 'function') {
+          wakePending.set(sessionId, Date.now());
+          try {
+            await conversation.send(SENTINEL_TEXT);
+            return;
+          } catch (error) {
+            wakePending.delete(sessionId);
+            errors.push(error && error.message ? error.message : String(error));
+            console.warn('[chat-actions] conversation.send wake failed:', error);
+          }
+        }
+        const rpcId = newRequestId();
+        sentinelIds.add(rpcId);
+        sentinelSession.set(rpcId, sessionId);
+        sentinelStarted.set(rpcId, Date.now());
+        try {
+          await sendAsPrompt(sessionId, SENTINEL_TEXT, 'queue', rpcId);
+        } catch (error) {
+          forgetSentinel(rpcId);
+          errors.push(error && error.message ? error.message : String(error));
+        }
+        if (errors.length > 0) throw new Error(errors.join(' / '));
+      };
 
       // ---- requirements 1 + 3: floating selection toolbar / message editor ----
       ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
@@ -1373,19 +1469,9 @@ window.__ModuleLoader__.load({
             // Queued-image thumbnails: the host resolves the durable attachment
             // to a URL, so the row previews exactly what will be sent.
             loadImage: (attachment) => loadImageFor(sessionId, attachment),
-            // Wake the driver with a one-shot sentinel so the Host claims the
-            // oldest queued message natively (attachments included). The
-            // plugin-level sweeper removes the sentinel row afterwards.
-            wakeQueue: () => {
-              const rpcId = newRequestId();
-              sentinelIds.add(rpcId);
-              sentinelSession.set(rpcId, sessionId);
-              sentinelStarted.set(rpcId, Date.now());
-              return sendAsPrompt(sessionId, SENTINEL_TEXT, 'queue', rpcId).catch((error) => {
-                forgetSentinel(rpcId);
-                throw error;
-              });
-            },
+            // Wake the driver so the Host claims the oldest queued message
+            // natively (attachments included); the sweeper removes the sentinel.
+            wakeQueue: () => wakeSession(sessionId),
             notify: (level, text) => {
               try {
                 if (shell && typeof shell.notify === 'function') shell.notify(level, text);
