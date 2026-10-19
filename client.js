@@ -8,7 +8,7 @@ window.__ModuleLoader__.load({
     const NS = 'chatActions';
     /** Build marker: bumped on every behaviour change so the running page can
      *  prove which bundle it actually loaded (see console + toolbar tooltip). */
-    const BUILD = 'v7.9-queue-image-preview';
+    const BUILD = 'v8.0-single-queue-strip';
     const ASK_KIND = 'chat-actions-ask';
     const ASK_ID = 'dsh-chat-actions/ask';
     const TOOLS_ID = 'chat-actions-tools';
@@ -747,15 +747,17 @@ window.__ModuleLoader__.load({
       const [editing, setEditing] = useState(null);
       const [busy, setBusy] = useState(null);
       const [preview, setPreview] = useState(null);
+      const [collapsed, setCollapsed] = useState(false);
       const rowCount = queue.length + pending.length;
 
       useEffect(() => {
         if (editing !== null && !queue.some((row) => row.id === editing.id)) setEditing(null);
       }, [editing, queue]);
 
-      // The shipped queue strip is NEVER hidden: losing the queue list is far
-      // worse than briefly showing two strips. This bar is purely additive.
-      if (running || rowCount === 0) return null;
+      // This component OWNS the queue cell (the shipped dock is replaced, not
+      // duplicated): the strip must stay visible in every state, so it only
+      // yields when there is nothing queued at all.
+      if (rowCount === 0) return null;
 
       const notifyError = (text) => {
         try { if (typeof notify === 'function') notify('error', text); } catch (_error) { /* ignore */ }
@@ -920,20 +922,38 @@ window.__ModuleLoader__.load({
           }
         },
           h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 } },
+            rowCount > 1
+              ? h('button', {
+                type: 'button',
+                onClick: () => setCollapsed((value) => !value),
+                'aria-expanded': collapsed ? 'false' : 'true',
+                title: formatT(t, 'queue.count', { n: rowCount }),
+                style: {
+                  font: FONT, height: '20px', width: '20px', flex: 'none',
+                  border: 'none', borderRadius: '6px', cursor: 'pointer',
+                  background: 'transparent', color: TOKEN_MUTED
+                }
+              }, collapsed ? '▸' : '▾')
+              : null,
             h('span', {
               style: {
                 flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap', font: FONT, opacity: 0.75
               }
-            }, formatT(t, 'queue.count', { n: rowCount }) + ' · ' + formatT(t, 'queue.paused')),
+            }, formatT(t, 'queue.count', { n: rowCount }) + ' · '
+              + formatT(t, running ? 'queue.sending' : 'queue.paused')),
             smallButton(formatT(t, 'queue.send') + ' ↓', () => sendNext(), {
-              disabled: busy !== null || queue.length === 0,
+              // While a turn runs the host claims the queue by itself; the manual
+              // send only exists for the paused state this plugin was asked for.
+              disabled: busy !== null || running || queue.length === 0,
               title: formatT(t, 'queue.sendHint')
             })
           ),
-          h('div', {
-            style: { display: 'flex', flexDirection: 'column', gap: '2px', maxHeight: '132px', overflowY: 'auto' }
-          }, rows)
+          collapsed && rowCount > 1
+            ? null
+            : h('div', {
+              style: { display: 'flex', flexDirection: 'column', gap: '2px', maxHeight: '132px', overflowY: 'auto' }
+            }, rows)
         ),
         preview === null ? null : h(QueueImagePreview, {
           image: preview,
@@ -1324,8 +1344,11 @@ window.__ModuleLoader__.load({
       // ---- requirement 2: paused queue bar -------------------------------
       ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
         name: 'conversation.input.dock',
-        id: 'chat-actions-queue',
-        order: 19,
+        // Same cell id as the shipped queue dock: reusing it REPLACES that cell,
+        // so the page shows exactly one queue strip with the thumbnails and the
+        // send-while-paused behaviour, instead of two stacked lists.
+        id: 'queue',
+        order: 20,
         locale: NS,
         inject: (sessionId) => {
           const conversation = conversationOf(sessionId);
