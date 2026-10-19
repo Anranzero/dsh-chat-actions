@@ -8,13 +8,15 @@ window.__ModuleLoader__.load({
     const NS = 'chatActions';
     /** Build marker: bumped on every behaviour change so the running page can
      *  prove which bundle it actually loaded (see console + toolbar tooltip). */
-    const BUILD = 'v7.8-editor-fullwidth';
+    const BUILD = 'v7.9-queue-image-preview';
     const ASK_KIND = 'chat-actions-ask';
     const ASK_ID = 'dsh-chat-actions/ask';
     const TOOLS_ID = 'chat-actions-tools';
     const SENTINEL_TEXT = '·';
     const QUOTE_SOURCE = 'chat-actions-quote';
     const QUOTE_LABEL_CHARS = 60;
+    /** How many queued images a row shows before the rest collapse into a count. */
+    const MAX_QUEUE_THUMBS = 3;
 
     /** Model-visible projection of one quote chip (Markdown blockquote). */
     function quoteFrame(payload) {
@@ -113,6 +115,7 @@ window.__ModuleLoader__.load({
       'queue.remove': '删除',
       'queue.sending': '发送中…',
       'queue.attachments': '{n} 个附件',
+      'queue.image': '点击查看大图',
       'queue.waiting': '前面还有 {n} 条，按顺序发送',
       'queue.sendFailed': '发送失败，请重试',
       'queue.removeFailed': '删除失败：这条消息可能已经开始发送。',
@@ -150,6 +153,7 @@ window.__ModuleLoader__.load({
       'queue.remove': 'Remove',
       'queue.sending': 'Sending…',
       'queue.attachments': '{n} attachment(s)',
+      'queue.image': 'Click to enlarge',
       'queue.waiting': '{n} ahead — messages send in order',
       'queue.sendFailed': 'Send failed, please retry',
       'queue.removeFailed': 'Removal failed: this message may have already started sending.',
@@ -176,6 +180,19 @@ window.__ModuleLoader__.load({
         if (block && (block.type === 'image' || block.type === 'file')) count += 1;
       }
       return count;
+    }
+
+    /** Attachment blocks of one queued message, in order. An image carries the
+     *  durable attachment the host resolves to a URL; a file only its name. */
+    function attachmentsOf(content) {
+      if (!Array.isArray(content)) return [];
+      const out = [];
+      for (const block of content) {
+        if (!block || (block.type !== 'image' && block.type !== 'file')) continue;
+        if (!block.attachment) continue;
+        out.push({ type: block.type, attachment: block.attachment });
+      }
+      return out;
     }
 
     function formatT(t, key, params) {
@@ -614,8 +631,81 @@ window.__ModuleLoader__.load({
     // ------------------------------------------------------------------
 
 
+    /** Thumbnail geometry: fixed so a row keeps its height while the host
+     *  resolves the durable attachment into a URL. */
+    const QUEUE_THUMB = {
+      width: '20px', height: '20px', flex: 'none', display: 'block',
+      borderRadius: '4px', background: 'rgba(127,127,127,.22)'
+    };
+
+    /** One queued image: the host resolves the attachment, the click opens the
+     *  full-size preview — a queued screenshot is otherwise unreadable before
+     *  it is sent. */
+    function QueueThumb(props) {
+      const { attachment, loadImage, label, onOpen } = props;
+      const [url, setUrl] = useState(null);
+      useEffect(() => {
+        let alive = true;
+        if (typeof loadImage !== 'function') return () => { alive = false; };
+        try {
+          Promise.resolve(loadImage(attachment)).then((resolved) => {
+            if (alive && typeof resolved === 'string' && resolved !== '') setUrl(resolved);
+          }, () => { /* the placeholder stays */ });
+        } catch (_error) { /* the placeholder stays */ }
+        return () => { alive = false; };
+      }, [attachment, loadImage]);
+      if (url === null) return h('span', { 'aria-hidden': true, title: label, style: QUEUE_THUMB });
+      return h('img', {
+        src: url,
+        alt: label,
+        title: label,
+        'data-chat-actions-queue-thumb': '',
+        onClick: (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onOpen({ url, name: attachment && attachment.name ? attachment.name : label });
+        },
+        style: { ...QUEUE_THUMB, objectFit: 'cover', cursor: 'zoom-in' }
+      });
+    }
+
+    /** Full-size preview of one queued image: a fixed overlay; a click, the
+     *  backdrop, or Escape closes it. */
+    function QueueImagePreview(props) {
+      const { image, onClose, label } = props;
+      useEffect(() => {
+        const onKey = (event) => {
+          if (event.key !== 'Escape') return;
+          event.preventDefault();
+          onClose();
+        };
+        document.addEventListener('keydown', onKey, true);
+        return () => document.removeEventListener('keydown', onKey, true);
+      }, [onClose]);
+      const title = image.name || label;
+      return h('div', {
+        'data-chat-actions-image-preview': '',
+        role: 'dialog',
+        'aria-modal': 'true',
+        'aria-label': title,
+        onClick: () => onClose(),
+        style: {
+          position: 'fixed', inset: '0', zIndex: '2147483300',
+          background: 'rgba(0,0,0,.72)', display: 'flex', alignItems: 'center',
+          justifyContent: 'center', padding: '28px', cursor: 'zoom-out'
+        }
+      }, h('img', {
+        src: image.url,
+        alt: title,
+        style: {
+          maxWidth: '92vw', maxHeight: '90vh', objectFit: 'contain',
+          borderRadius: '8px', boxShadow: '0 16px 56px rgba(0,0,0,.55)'
+        }
+      }));
+    }
+
     function PausedQueueBar(props) {
-      const { useSession, useProjection, useInput, inputActions, updateQueue, wakeQueue, sentinelIds, notify, t } = props;
+      const { useSession, useProjection, useInput, inputActions, updateQueue, wakeQueue, sentinelIds, notify, loadImage, t } = props;
       const inbox = typeof useProjection === 'function' ? useProjection('inbox') : undefined;
       const pendingSubmissions = useSession((state) => state.pendingSubmissions) || [];
       const running = useSession((state) => state.running) === true;
@@ -656,6 +746,7 @@ window.__ModuleLoader__.load({
 
       const [editing, setEditing] = useState(null);
       const [busy, setBusy] = useState(null);
+      const [preview, setPreview] = useState(null);
       const rowCount = queue.length + pending.length;
 
       useEffect(() => {
@@ -732,6 +823,14 @@ window.__ModuleLoader__.load({
       queue.forEach((row, index) => {
         const text = textOf(row.content);
         const attachments = attachmentCountOf(row.content);
+        const blocks = attachmentsOf(row.content);
+        const images = [];
+        const files = [];
+        for (const entry of blocks) {
+          if (entry.type === 'image') images.push(entry);
+          else files.push(entry);
+        }
+        const shownImages = images.slice(0, MAX_QUEUE_THUMBS);
         const isEditing = editing !== null && editing.id === row.id;
         const isFirst = index === 0;
         rows.push(h('div', {
@@ -739,6 +838,13 @@ window.__ModuleLoader__.load({
           'data-chat-actions-queue-row': '',
           style: { display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, height: '22px' }
         },
+          isEditing ? null : shownImages.map((entry, imageIndex) => h(QueueThumb, {
+            key: 'thumb:' + String(row.id) + ':' + imageIndex,
+            attachment: entry.attachment,
+            loadImage,
+            label: formatT(t, 'queue.image'),
+            onOpen: setPreview
+          })),
           isEditing
             ? h('input', {
               value: editing.text,
@@ -762,7 +868,12 @@ window.__ModuleLoader__.load({
               }
             },
               text === '' ? formatT(t, 'queue.attachments', { n: attachments }) : text,
-              attachments > 0 ? h('span', { style: { opacity: 0.6, marginLeft: '6px' } }, '📎' + attachments) : null
+              // Images already show as thumbnails; only files still need a count.
+              files.length > 0
+                ? h('span', { style: { opacity: 0.6, marginLeft: '6px' } }, '📎' + files.length)
+                : (attachments > 0 && shownImages.length === 0
+                  ? h('span', { style: { opacity: 0.6, marginLeft: '6px' } }, '📎' + attachments)
+                  : null)
             ),
           isEditing
             ? h('span', { style: { display: 'inline-flex', gap: '4px' } },
@@ -797,7 +908,8 @@ window.__ModuleLoader__.load({
         ));
       }
 
-      return h('div', {
+      return h(React.Fragment, null,
+        h('div', {
           'data-chat-actions-queue': '',
           style: {
             display: 'flex', flexDirection: 'column', gap: '2px', padding: '5px 8px',
@@ -822,6 +934,12 @@ window.__ModuleLoader__.load({
           h('div', {
             style: { display: 'flex', flexDirection: 'column', gap: '2px', maxHeight: '132px', overflowY: 'auto' }
           }, rows)
+        ),
+        preview === null ? null : h(QueueImagePreview, {
+          image: preview,
+          label: formatT(t, 'queue.image'),
+          onClose: () => setPreview(null)
+        })
       );
     }
 
@@ -935,6 +1053,17 @@ window.__ModuleLoader__.load({
       };
 
       const sessions = () => getService('sessions');
+
+      /** The UI conversation service resolves a durable attachment to a URL.
+       *  Resolved lazily: the queued-image thumbnails must work even when the
+       *  service lands after this plugin. */
+      const loadImageFor = (sessionId, attachment) => {
+        const uiConversation = getService('uiConversation');
+        if (!uiConversation || typeof uiConversation.imageUrl !== 'function') {
+          return Promise.reject(new Error('uiConversation.imageUrl unavailable'));
+        }
+        return uiConversation.imageUrl(sessionId, attachment);
+      };
 
       const bindingOf = (sessionId) => {
         const service = sessions();
@@ -1218,6 +1347,9 @@ window.__ModuleLoader__.load({
               return conversation.updateQueue(itemId, action);
             },
             sentinelIds,
+            // Queued-image thumbnails: the host resolves the durable attachment
+            // to a URL, so the row previews exactly what will be sent.
+            loadImage: (attachment) => loadImageFor(sessionId, attachment),
             // Wake the driver with a one-shot sentinel so the Host claims the
             // oldest queued message natively (attachments included). The
             // plugin-level sweeper removes the sentinel row afterwards.
