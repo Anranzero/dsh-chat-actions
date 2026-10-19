@@ -17,33 +17,40 @@ DeepSeek Harness（DSH）Web 客户端插件，给对话界面加四个实用操
 
 ### 安装
 
-插件没有第三方依赖，两种方式任选。
-
-**方式一：本地目录安装（推荐）**
+插件零第三方依赖，一条命令即可。把 `<profile>` 换成你的 profile 名（默认 `desktop`）：
 
 ```bash
-git clone https://github.com/Anranzero/dsh-chat-actions.git
+# Windows PowerShell
+.\install.ps1 -Profile desktop
+
+# macOS / Linux
+./install.sh desktop
 ```
 
-然后在 DSH 里打开 **设置 → 插件 → 安装 bundle**，选择 clone 下来的目录。
+脚本做三件事：`git` 源装进 profile 的 `node_modules`、把 `dsh-chat-actions` 写进
+`dsh.profile.bundles`（真正决定是否加载的那一层）、最后用 `dsh --dump-config` 校验。
+看到 `OK: the profile loads dsh-chat-actions.` 就装好了，重启 DSH 生效。
 
-或者手动接入 profile：
+不想先 clone 也行，DSH 自带的插件命令同样一条命令：
 
 ```bash
-# 1. 链接到 profile
-#    Windows: mklink /J "%USERPROFILE%\.dsh\profiles\<profile>\node_modules\dsh-chat-actions" "<clone 路径>"
-#    macOS/Linux: ln -s "<clone 路径>" ~/.dsh/profiles/<profile>/node_modules/dsh-chat-actions
-
-# 2. 在 profile 的 package.json 中：
-#    dependencies 增加 "dsh-chat-actions": "link:<clone 路径>"
-#    dsh.profile.bundles 增加 "dsh-chat-actions"
+dsh plugin --profile desktop add github:Anranzero/dsh-chat-actions
 ```
 
-**方式二：作为 profile bundle**
+只想链接当前工作副本（改代码即时生效，适合开发）：
 
-`package.json` 已声明 `dsh.bundle.patch`，任何支持 bundle 的安装流程都能识别。
+```bash
+.\install.ps1 -FromClone      # Windows
+./install.sh --from-clone     # macOS / Linux
+```
 
-安装后重启 DSH（或等 HMR 重载）。
+`install.ps1` 还支持 `-DshHome <path>`、`-Spec <spec>`，`install.sh` 支持用 `DSH_HOME` 环境变量指定。
+
+### 版本要求
+
+- 需要带 **bundle patch + client slot** 机制的 DSH 版本；本插件在 `dsh 0.2.1-rc.2` 上实测通过。
+- 插件在旧版 Host 上也能正常用：热更新（改动即时推到已打开的页面）依赖 `clientModules` 服务，
+  该服务缺失时自动跳过，界面功能不受影响。
 
 ### 使用
 
@@ -93,33 +100,46 @@ A DeepSeek Harness (DSH) Web client plugin that adds four practical actions to t
 
 ### Install
 
-No third-party dependencies. Two options:
-
-**Option 1 — install from a local directory (recommended)**
-
-```bash
-git clone https://github.com/Anranzero/dsh-chat-actions.git
-```
-
-Then in DSH open **Settings → Plugins → Install bundle** and pick the cloned directory.
-
-Or wire it into a profile manually:
+No third-party dependencies, one command. Replace `<profile>` with your profile
+name (defaults to `desktop`):
 
 ```bash
-# 1. link into the profile
-#    Windows: mklink /J "%USERPROFILE%\.dsh\profiles\<profile>\node_modules\dsh-chat-actions" "<clone path>"
-#    macOS/Linux: ln -s "<clone path>" ~/.dsh/profiles/<profile>/node_modules/dsh-chat-actions
+# Windows PowerShell
+.\install.ps1 -Profile desktop
 
-# 2. in the profile package.json:
-#    add "dsh-chat-actions": "link:<clone path>" to dependencies
-#    add "dsh-chat-actions" to dsh.profile.bundles
+# macOS / Linux
+./install.sh desktop
 ```
 
-**Option 2 — as a profile bundle**
+The script does three things: installs the GitHub source into the profile's
+`node_modules`, writes `dsh-chat-actions` into `dsh.profile.bundles` (the layer
+that actually decides what loads), and verifies with `dsh --dump-config`. Seeing
+`OK: the profile loads dsh-chat-actions.` means it worked; restart DSH to load it.
 
-`package.json` declares `dsh.bundle.patch`, so any bundle-aware install flow can pick it up.
+No clone needed — DSH's own plugin command is also one line:
 
-Restart DSH (or let HMR reload) after installing.
+```bash
+dsh plugin --profile desktop add github:Anranzero/dsh-chat-actions
+```
+
+To link your working copy instead (edits take effect immediately, good for
+development):
+
+```bash
+.\install.ps1 -FromClone      # Windows
+./install.sh --from-clone     # macOS / Linux
+```
+
+`install.ps1` also accepts `-DshHome <path>` and `-Spec <spec>`; `install.sh`
+honours the `DSH_HOME` environment variable.
+
+### Requirements
+
+- Needs a DSH build with the **bundle patch + client slot** mechanism; verified on
+  `dsh 0.2.1-rc.2`.
+- Older hosts still work: live reload (pushing edits into an already-open page)
+  needs the `clientModules` service, and the plugin skips it when absent — every
+  UI feature keeps working.
 
 ### Usage
 
