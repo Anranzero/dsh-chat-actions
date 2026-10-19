@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Chat Quick Actions",
+    "description": "Select conversation text to insert it into the composer or ask in the sidebar, send queued messages while paused, and reload a sent message for editing and resending."
+  }
+}
