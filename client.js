@@ -8,7 +8,7 @@ window.__ModuleLoader__.load({
     const NS = 'chatActions';
     /** Build marker: bumped on every behaviour change so the running page can
      *  prove which bundle it actually loaded (see console + toolbar tooltip). */
-    const BUILD = 'v8.1-queue-wake';
+    const BUILD = 'v8.2-wake-chain';
     const ASK_KIND = 'chat-actions-ask';
     const ASK_ID = 'dsh-chat-actions/ask';
     const TOOLS_ID = 'chat-actions-tools';
@@ -1322,6 +1322,10 @@ window.__ModuleLoader__.load({
 
       const sweepSentinels = () => {
         const now = Date.now();
+        // One pass may match the same sentinel row twice (by text for a
+        // `conversation.send` wake and by rpcId for a facade wake); the second
+        // remove would only fail as queue-item-not-found.
+        const scheduled = new Set();
         // Sessions woken through `conversation.send`: match the sentinel by text,
         // because that path never returns the rpcId the row is keyed by.
         for (const [sessionId, started] of [...wakePending]) {
@@ -1342,9 +1346,17 @@ window.__ModuleLoader__.load({
           }
           const conversation = conversationOf(sessionId);
           if (!conversation || typeof conversation.updateQueue !== 'function') continue;
+          if (scheduled.has(sentinelRow.id)) continue;
+          scheduled.add(sentinelRow.id);
           Promise.resolve()
             .then(() => conversation.updateQueue(sentinelRow.id, { kind: 'remove' }))
-            .then(() => wakePending.delete(sessionId), () => { /* retry on the next tick */ });
+            .then(() => {
+              wakePending.delete(sessionId);
+              // The row also carries the facade rpcId when a fallback wake ran;
+              // drop that bookkeeping so the id does not linger.
+              const rpcId = sentinelRow.source && sentinelRow.source.rpcId;
+              if (rpcId) forgetSentinel(rpcId);
+            }, () => { /* retry on the next tick */ });
         }
 
         if (sentinelSession.size === 0) return;
@@ -1360,9 +1372,17 @@ window.__ModuleLoader__.load({
             const source = candidate && candidate.source;
             return source && source.kind === 'user' && source.rpcId === rpcId;
           });
-          if (!row) continue;
+          if (!row) {
+            // The row is gone: either the host claimed it (the wake worked) or
+            // the text pass already removed it. Keep a short grace period so a
+            // prompt that has not landed yet is not mistaken for a delivered one.
+            if (now - started > 3000) forgetSentinel(rpcId);
+            continue;
+          }
           const conversation = conversationOf(sessionId);
           if (!conversation || typeof conversation.updateQueue !== 'function') continue;
+          if (scheduled.has(row.id)) continue;
+          scheduled.add(row.id);
           Promise.resolve()
             .then(() => conversation.updateQueue(row.id, { kind: 'remove' }))
             .then(() => forgetSentinel(rpcId), () => { /* retry on the next tick */ });
@@ -1377,37 +1397,44 @@ window.__ModuleLoader__.load({
       /**
        * Wake a paused conversation so the Host claims its oldest queued message.
        *
-       * The preferred path is the conversation service's own `send()`, which is
-       * exactly what the composer's text sender calls (`prompt(content, 'queue')`
-       * on the scoped session). The session-facade call stays as a fallback for
-       * hosts that do not expose `send`; it needs a live binding and is the path
-       * that silently did nothing before.
+       * Tries the supported paths in order and reports every failure instead of
+       * one opaque sentence — this is the only way a paused queue can move, so a
+       * silent miss is fatal:
+       *   1. `conversation.send(text)` — exactly what the composer's text sender
+       *      calls (`prompt(content, 'queue')` on the scoped session).
+       *   2. the session facade's `prompt` — the pre-existing fallback, kept for
+       *      hosts that expose no `send`.
        */
       const wakeSession = async (sessionId) => {
+        const attempts = [];
         const conversation = conversationOf(sessionId);
-        const errors = [];
         if (conversation && typeof conversation.send === 'function') {
+          attempts.push(['conversation.send', () => conversation.send(SENTINEL_TEXT)]);
+        }
+        attempts.push(['session.prompt', () => {
+          const rpcId = newRequestId();
+          sentinelIds.add(rpcId);
+          sentinelSession.set(rpcId, sessionId);
+          sentinelStarted.set(rpcId, Date.now());
+          return sendAsPrompt(sessionId, SENTINEL_TEXT, 'queue', rpcId).catch((error) => {
+            forgetSentinel(rpcId);
+            throw error;
+          });
+        }]);
+
+        const failures = [];
+        for (const [name, run] of attempts) {
           wakePending.set(sessionId, Date.now());
           try {
-            await conversation.send(SENTINEL_TEXT);
+            await run();
             return;
           } catch (error) {
             wakePending.delete(sessionId);
-            errors.push(error && error.message ? error.message : String(error));
-            console.warn('[chat-actions] conversation.send wake failed:', error);
+            failures.push(name + ': ' + (error && error.message ? error.message : String(error)));
+            console.warn('[chat-actions] queue wake via ' + name + ' failed:', error);
           }
         }
-        const rpcId = newRequestId();
-        sentinelIds.add(rpcId);
-        sentinelSession.set(rpcId, sessionId);
-        sentinelStarted.set(rpcId, Date.now());
-        try {
-          await sendAsPrompt(sessionId, SENTINEL_TEXT, 'queue', rpcId);
-        } catch (error) {
-          forgetSentinel(rpcId);
-          errors.push(error && error.message ? error.message : String(error));
-        }
-        if (errors.length > 0) throw new Error(errors.join(' / '));
+        throw new Error(failures.join(' / '));
       };
 
       // ---- requirements 1 + 3: floating selection toolbar / message editor ----

@@ -57,7 +57,8 @@ dsh plugin --profile desktop add github:Anranzero/dsh-chat-actions
 - **引用**：鼠标划选对话内容 → 点「添加到对话」
 - **侧边栏提问**：划选 → 点「在侧边栏提问」
 - **编辑消息**：悬停你自己发的消息 → 点复制图标右侧的铅笔
-- **排队发送**：让 Agent 跑起来时输入消息（进入排队）→ 停止对话 → 在输入框上方的排队条点「发送」
+- **排队发送**：让 Agent 跑起来时输入消息（进入排队）→ 停止对话 → 在输入框上方那条队列里点「发送 ↓」或行尾「↑」
+- **排队图片**：排队行直接显示缩略图，点一下开全屏预览（点背景或按 Esc 关闭）
 
 ### 实现要点
 
@@ -66,7 +67,7 @@ dsh plugin --profile desktop add github:Anranzero/dsh-chat-actions
 | 选区浮条 | `conversation.input.dock` 插槽 + `position: fixed` 浮层，滚动/缩放时用 `Range` 重算位置（rAF 合并，隐藏时零开销） |
 | 引用 chip | `ctx.inputTriggers.registerSource({ trigger: '@', codec })` + `conversation.input.for(scope).insertReference()` |
 | 侧边栏 | `sidebarRightTabs.register()` + `sidebar.right.pane.tab` 插槽 |
-| 排队发送 | `conversation.input.dock` + `useProjection('inbox')`；用一次性哨兵唤醒 Host 领取队首消息 |
+| 排队发送 | 接管宿主 `queue` 单元（不再并列第二条）：`useProjection('inbox')` + 哨兵唤醒宿主领取队首消息（保留附件） |
 | 编辑消息 | 在宿主操作行内插入按钮（复用宿主 class 保证对齐）+ 内联编辑框 |
 
 ### 已知限制
@@ -146,7 +147,8 @@ honours the `DSH_HOME` environment variable.
 - **Quote**: select conversation text → "Add to chat"
 - **Ask**: select text → "Ask in sidebar"
 - **Edit**: hover your own message → pencil next to the copy icon
-- **Queue**: type while the agent runs (message is queued) → stop the agent → click "Send" on the queue bar above the composer
+- **Queue**: type while the agent runs (message is queued) → stop the agent → click "Send ↓" in the queue strip above the composer, or the "↑" at a row's end
+- **Queued images**: rows show thumbnails; click one for a full-size preview (click the backdrop or press Escape to close)
 
 ### Known limitations
 
