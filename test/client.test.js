@@ -8,12 +8,23 @@ const quoteSource = 'chat-actions-quote';
 
 // Exercise the actual plugin's registration and insertion paths, not its views.
 // No DOM, React rendering, network requests or real timers are needed.
-function setup(initialTriggers) {
+function setup(initialTriggers, { hostConversationFirst = false } = {}) {
   let definition;
   const inserted = [];
   const cleanups = [];
   const dependencies = [];
   const slots = new Map();
+  const declaredSlots = new Set();
+  const declareSlots = (children) => {
+    for (const name of Object.keys(children || {})) {
+      assert.equal(declaredSlots.has(name), false, `slot "${name}" is already declared`);
+      declaredSlots.add(name);
+    }
+  };
+  const registerHostConversation = () => declareSlots({
+    'conversation.session': { kind: 'single', scope: 'session' }
+  });
+  if (hostConversationFirst) registerHostConversation();
   const services = { inputTriggers: initialTriggers };
   const input = {
     state: { getSnapshot: () => ({ phase: 'plain', draft: '', draftRev: 1, occurrences: [] }) },
@@ -37,7 +48,11 @@ function setup(initialTriggers) {
     locale: { register: () => () => {}, bind: () => (key) => key },
     slots: {
       inject: (_name, run) => run(),
-      register: (options) => { slots.set(options.id || options.key, options); return () => {}; }
+      register: (options) => {
+        declareSlots(options.children);
+        slots.set(options.id || options.key, options);
+        return () => {};
+      }
     },
     inject: (names, run) => { dependencies.push({ names, run }); }
   };
@@ -75,12 +90,21 @@ function setup(initialTriggers) {
   };
   if (initialTriggers) activate(initialTriggers);
   return {
+    registerHostConversation,
     insert: (text) => slots.get('chat-actions-tools').inject('session-a').insertQuote(text),
     inserted,
     activate,
     dispose: () => { for (const dispose of cleanups.reverse()) dispose(); }
   };
 }
+
+test('sidebar ask registration coexists with host conversation slots in either startup order', () => {
+  for (const hostConversationFirst of [false, true]) {
+    const client = setup(undefined, { hostConversationFirst });
+    if (!hostConversationFirst) client.registerHostConversation();
+    client.dispose();
+  }
+});
 
 function registry({ fail = false } = {}) {
   const sources = new Map();

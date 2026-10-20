@@ -1705,7 +1705,6 @@ window.__ModuleLoader__.load({
         name: 'sidebar.right.pane.tab',
         key: ASK_ID,
         locale: NS,
-        children: { 'conversation.session': { kind: 'single', scope: 'session' } },
         inject: (sessionId) => ({
           createSideSession: (parentId) => createSideSession(parentId || sessionId),
           insertSideQuote: (targetId, text) => insertQuote(targetId, text),
