@@ -8,7 +8,7 @@ window.__ModuleLoader__.load({
     const NS = 'chatActions';
     /** Build marker: bumped on every behaviour change so the running page can
      *  prove which bundle it actually loaded (see console + toolbar tooltip). */
-    const BUILD = 'v8.2-wake-chain';
+    const BUILD = 'v9-isolated-sidebar-queue-recovery';
     const ASK_KIND = 'chat-actions-ask';
     const ASK_ID = 'dsh-chat-actions/ask';
     const TOOLS_ID = 'chat-actions-tools';
@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
     function quoteFrame(payload) {
       const text = String((payload && payload.text) || '');
       const head = payload && payload.truncated ? '> [引用 · 对话片段 · 已截断]' : '> [引用 · 对话片段]';
-      const body = text.split('\n').map((line) => '> ' + line.replace(/^[ \t]+/, '')).join('\n');
+      const body = text.split('\n').map((line) => '> ' + line).join('\n');
       return head + '\n' + body + '\n\n';
     }
 
@@ -46,6 +46,28 @@ window.__ModuleLoader__.load({
     function quoteLabelOf(text) {
       const flat = String(text || '').replace(/\s+/g, ' ').trim();
       return flat.length > QUOTE_LABEL_CHARS ? flat.slice(0, QUOTE_LABEL_CHARS) + '…' : flat;
+    }
+
+    /** Replace one native reference without flattening other chips or commands. */
+    function replaceQuote(draft, reference, text) {
+      const refs = draft.references || [];
+      const index = refs.findIndex((item) => item.source === QUOTE_SOURCE
+        && item.ref === reference.ref && item.offset === reference.offset && item.length === reference.length);
+      if (index < 0) return undefined;
+      const current = refs[index];
+      const payload = text === null ? null : quotePayloadOf(text);
+      const replacement = payload === null ? '' : quoteFrame(payload);
+      const delta = replacement.length - current.length;
+      return {
+        ...draft,
+        text: draft.text.slice(0, current.offset) + replacement + draft.text.slice(current.offset + current.length),
+        references: refs.flatMap((item, i) => {
+          if (i === index) return payload === null ? [] : [{ ...item,
+            ref: JSON.stringify(payload), label: quoteLabelOf(text), clipboardText: replacement, length: replacement.length
+          }];
+          return [{ ...item, offset: item.offset >= current.offset + current.length ? item.offset + delta : item.offset }];
+        })
+      };
     }
 
     /** The same props-to-handler bridge used by the real toolbar and tests. */
@@ -93,15 +115,20 @@ window.__ModuleLoader__.load({
       'tools.editTitle': '编辑消息',
       'tools.send': '发送',
       'tools.cancel': '取消',
+      'quote.label': '引用 {n}',
+      'quote.edit': '编辑引用',
+      'quote.remove': '删除引用',
+      'quote.changed': '草稿已变化，请重新编辑引用',
       'editor.placeholder': '修改后作为新消息发送…',
       'editor.empty': '内容不能为空',
       'editor.sendFailed': '发送失败：{message}',
       'editor.sent': '已发送',
+      'editor.textOnly': '仅重发文字；原消息的附件不会随之发送',
       'ask.title': '选区提问',
       'ask.quoteLabel': '选中的对话内容',
       'ask.questionPlaceholder': '针对选中内容提问，回车发送…',
       'ask.send': '发送问题',
-      'ask.sent': '已发送到对话',
+      'ask.sent': '已发送到独立侧边会话',
       'ask.defaultQuestion': '请解释以上内容',
       'ask.failed': '发送失败：{message}',
       'ask.empty': '没有拿到选中的内容，请重新选择后再试',
@@ -110,10 +137,12 @@ window.__ModuleLoader__.load({
       'queue.send': '发送',
       'queue.sendHint': '发送队列中的下一条',
       'queue.edit': '编辑',
+      'queue.attachmentEdit': '含附件的消息暂不支持编辑，可直接发送或删除',
       'queue.save': '保存',
       'queue.cancel': '取消',
       'queue.remove': '删除',
       'queue.sending': '发送中…',
+      'queue.waking': '正在恢复队列，请稍候',
       'queue.attachments': '{n} 个附件',
       'queue.image': '点击查看大图',
       'queue.waiting': '前面还有 {n} 条，按顺序发送',
@@ -131,15 +160,20 @@ window.__ModuleLoader__.load({
       'tools.editTitle': 'Edit message',
       'tools.send': 'Send',
       'tools.cancel': 'Cancel',
+      'quote.label': 'Quote {n}',
+      'quote.edit': 'Edit quote',
+      'quote.remove': 'Remove quote',
+      'quote.changed': 'Draft changed. Please reopen the quote editor.',
       'editor.placeholder': 'Edit, then send as a new message…',
       'editor.empty': 'Content cannot be empty',
       'editor.sendFailed': 'Send failed: {message}',
       'editor.sent': 'Sent',
+      'editor.textOnly': 'Resends text only; original attachments are not included',
       'ask.title': 'Ask about selection',
       'ask.quoteLabel': 'Selected conversation content',
       'ask.questionPlaceholder': 'Ask about the selection, Enter to send…',
       'ask.send': 'Send question',
-      'ask.sent': 'Sent to the conversation',
+      'ask.sent': 'Sent to the independent side chat',
       'ask.defaultQuestion': 'Please explain the content above',
       'ask.failed': 'Send failed: {message}',
       'ask.empty': 'No selection content was provided. Select the text again and retry.',
@@ -148,10 +182,12 @@ window.__ModuleLoader__.load({
       'queue.send': 'Send',
       'queue.sendHint': 'Send the next queued message',
       'queue.edit': 'Edit',
+      'queue.attachmentEdit': 'Messages with attachments can be sent or removed, but cannot be edited yet',
       'queue.save': 'Save',
       'queue.cancel': 'Cancel',
       'queue.remove': 'Remove',
       'queue.sending': 'Sending…',
+      'queue.waking': 'Resuming the queue. Please wait.',
       'queue.attachments': '{n} attachment(s)',
       'queue.image': 'Click to enlarge',
       'queue.waiting': '{n} ahead — messages send in order',
@@ -220,7 +256,8 @@ window.__ModuleLoader__.load({
         const clone = row.cloneNode(true);
         const drop = clone.querySelectorAll('button, [data-clock], [aria-hidden="true"]');
         for (const node of drop) node.remove();
-        return (clone.textContent || '').replace(/[ \t]+\n/g, '\n').trim();
+        const text = clone.textContent || '';
+        return text.trim() === '' ? '' : text;
       } catch (_error) {
         return '';
       }
@@ -258,16 +295,69 @@ window.__ModuleLoader__.load({
     // Floating UI: selection toolbar + message edit button + inline editor
     // (rendered into document.body so fixed coordinates are viewport ones)
     // ------------------------------------------------------------------
+    function QuoteDraft({ input, updateQuote, t }) {
+      const [editing, setEditing] = useState(null);
+      const [error, setError] = useState('');
+      const quotes = ((input && input.occurrences) || []).filter((item) => item.source === QUOTE_SOURCE);
+      const change = (reference, text, rev) => {
+        if (typeof updateQuote !== 'function' || !updateQuote(reference, text, rev)) {
+          setError(formatT(t, 'quote.changed'));
+          return;
+        }
+        setEditing(null);
+        setError('');
+      };
+      if (quotes.length === 0) return null;
+      const button = (label, onClick, disabled) => h('button', {
+        key: label, type: 'button', onClick, disabled, title: label, 'aria-label': label,
+        style: { border: 'none', borderRadius: '5px', padding: '3px 6px', background: TOKEN_HOVER, color: TOKEN_TEXT, font: FONT, cursor: 'pointer' }
+      }, label);
+      return h('div', {
+        'data-chat-actions-quotes': '',
+        style: { maxHeight: '210px', overflowY: 'auto', marginBottom: '6px', color: TOKEN_TEXT, font: FONT }
+      }, quotes.map((reference, index) => {
+        let text = '';
+        try { text = JSON.parse(reference.ref).text; } catch (_error) { /* invalid chip can still be removed */ }
+        const active = editing && editing.reference.ref === reference.ref && editing.reference.offset === reference.offset;
+        return h('div', {
+          key: String(reference.offset) + ':' + index,
+          style: { display: 'flex', alignItems: 'flex-start', gap: '8px', padding: '8px', marginTop: '4px', border: TOKEN_BORDER, borderRadius: '8px', background: TOKEN_BG }
+        },
+          h('span', { style: { color: TOKEN_MUTED, flex: 'none' } }, formatT(t, 'quote.label', { n: index + 1 })),
+          h('div', { style: { flex: '1 1 auto', minWidth: 0 } }, active
+            ? h('textarea', {
+              value: editing.text, autoFocus: true, 'aria-label': formatT(t, 'quote.edit'), rows: 4,
+              name: 'chat-actions-quote', autoComplete: 'off',
+              onChange: (event) => setEditing({ ...editing, text: event.target.value }),
+              onKeyDown: (event) => { if (event.key === 'Escape') setEditing(null); },
+              style: { width: '100%', boxSizing: 'border-box', resize: 'vertical', background: 'transparent', color: TOKEN_TEXT, border: TOKEN_BORDER, borderRadius: '5px', font: FONT }
+            })
+            : h('div', { title: text, style: { maxHeight: '64px', overflowY: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } }, text)),
+          h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px', flex: '0 1 auto', maxWidth: '45%' } }, active
+            ? [button(formatT(t, 'queue.save'), () => change(editing.reference, editing.text, editing.rev), editing.text.trim() === ''),
+              button(formatT(t, 'tools.cancel'), () => setEditing(null))]
+            : [button(formatT(t, 'quote.edit'), () => { setError(''); setEditing({ reference, text, rev: input.draftRev }); }),
+              button(formatT(t, 'quote.remove'), () => change(reference, null, input.draftRev))])
+        );
+      }), error ? h('div', { role: 'status', style: { color: 'var(--dsw-alias-label-error, #d9534f)' } }, error) : null);
+    }
+
     function ChatTools(props) {
       const { useInput } = props;
       const input = typeof useInput === 'function' ? useInput((state) => state) : undefined;
       const ref = useRef({});
+      const anchor = useRef(null);
       ref.current = toolsApiOf(props, input);
 
       useEffect(() => {
         const api = ref.current;
         const t = api.t;
-        const sessionId = api.sessionId;
+        const root = anchor.current && anchor.current.closest('[data-conversation-content]');
+        if (!root) return;
+        const owns = (node) => {
+          const element = node?.nodeType === 3 ? node.parentElement : node;
+          return element?.closest?.('[data-conversation-content]') === root;
+        };
         // ---------- selection toolbar -------------------------------
         const bar = document.createElement('div');
         bar.setAttribute('data-chat-actions-tools', '');
@@ -293,8 +383,8 @@ window.__ModuleLoader__.load({
         const askButton = makeButton(formatT(t, 'tools.askSidebar'), () => {
           const target = stateRef.current.toolbar;
           if (!target || typeof ref.current.openAsk !== 'function') return;
-          api.openAsk(target.text, api.sessionId);
-          hideBar();
+          if (ref.current.openAsk(target.text, ref.current.sessionId)) hideBar();
+          else askButton.textContent = formatT(t, 'tools.quoteFailed');
         });
         // Selection tools apply to either role, but editing belongs ONLY to a
         // sent human message and is exposed separately next to its copy action.
@@ -363,16 +453,19 @@ window.__ModuleLoader__.load({
         });
 
         const textarea = document.createElement('textarea');
+        textarea.setAttribute('aria-label', formatT(t, 'tools.editMessage'));
+        textarea.name = 'chat-actions-edit-message';
+        textarea.autocomplete = 'off';
         textarea.placeholder = formatT(t, 'editor.placeholder');
         Object.assign(textarea.style, {
           boxSizing: 'border-box', width: '100%', flex: '1 1 auto', minHeight: '38px',
           resize: 'none', padding: '0', border: 'none',
           background: 'transparent', color: TOKEN_TEXT,
-          font: 'var(--dsh-content-font-size, 14px)/calc(24px + var(--dsh-content-font-delta, 0px)) var(--dsw-font-family, system-ui, sans-serif)',
-          outline: 'none'
+          font: 'var(--dsh-content-font-size, 14px)/calc(24px + var(--dsh-content-font-delta, 0px)) var(--dsw-font-family, system-ui, sans-serif)'
         });
 
         const editorStatus = document.createElement('span');
+        editorStatus.setAttribute('role', 'status');
         Object.assign(editorStatus.style, { font: FONT, opacity: '0.75', flex: '1 1 auto' });
 
         const editorActions = document.createElement('div');
@@ -383,13 +476,14 @@ window.__ModuleLoader__.load({
         let sending = false;
         const sendButton = makeButton(formatT(t, 'tools.send'), async () => {
           if (sending) return;
-          const value = textarea.value.trim();
-          if (value === '') { editorStatus.textContent = formatT(t, 'editor.empty'); return; }
+          const value = textarea.value;
+          if (value.trim() === '') { editorStatus.textContent = formatT(t, 'editor.empty'); return; }
           sending = true;
           sendButton.disabled = true;
+          cancelButton.disabled = true;
           editorStatus.textContent = '';
           try {
-            await api.sendPrompt(value);
+            await ref.current.sendPrompt(value);
             editorStatus.textContent = formatT(t, 'editor.sent');
             closeEditor();
           } catch (error) {
@@ -398,6 +492,7 @@ window.__ModuleLoader__.load({
           } finally {
             sending = false;
             sendButton.disabled = false;
+            cancelButton.disabled = false;
           }
         });
         const cancelButton = makeButton(formatT(t, 'tools.cancel'), () => closeEditor(), { quiet: true });
@@ -451,7 +546,7 @@ window.__ModuleLoader__.load({
           bar.style.display = 'none';
         };
         const removePencil = () => {
-          const nodes = document.querySelectorAll('[data-chat-actions-pencil]');
+          const nodes = root.querySelectorAll('[data-chat-actions-pencil]');
           for (const node of nodes) node.remove();
         };
         const closeEditor = () => {
@@ -461,9 +556,10 @@ window.__ModuleLoader__.load({
           editorStatus.textContent = '';
         };
         const openEditor = (text, rect, row) => {
+          if (sending) return;
           if (!row || !isEditableMessageKind(row.getAttribute('data-chat-flow-kind'))) return;
           textarea.value = text;
-          editorStatus.textContent = '';
+          editorStatus.textContent = formatT(t, 'editor.textOnly');
           // Full-width placement: a sibling of the message row inside the chat
           // column. Width therefore tracks the composer width, and document
           // flow keeps it under the message it edits.
@@ -497,12 +593,13 @@ window.__ModuleLoader__.load({
           try {
             const selection = window.getSelection();
             if (!selection || selection.isCollapsed || selection.rangeCount === 0) return false;
-            const text = String(selection.toString() || '').trim();
-            if (text === '') return false;
+            const text = String(selection.toString() || '');
+            if (text.trim() === '') return false;
             const range = selection.getRangeAt(0);
             const node = range.commonAncestorContainer;
             const element = node && node.nodeType === 3 ? node.parentElement : node;
             if (!element || typeof element.closest !== 'function') return false;
+            if (!owns(element) || !owns(selection.anchorNode) || !owns(selection.focusNode)) { hideBar(); return false; }
             if (element.closest('[data-slot="conversation.chat.flow"]') === null) return false;
             const rect = range.getBoundingClientRect();
             stateRef.current.toolbar = { kind: 'selection', text, rect, range: range.cloneRange() };
@@ -516,7 +613,7 @@ window.__ModuleLoader__.load({
         const onClick = (event) => {
           const element = event.target;
           if (!element || typeof element.closest !== 'function') return;
-          if (bar.contains(element) || pencil.contains(element) || editor.contains(element)) return;
+          if (bar.contains(element) || element.closest('[data-chat-actions-pencil]') || editor.contains(element)) return;
           if (element.closest('[contenteditable="true"], textarea, input') !== null) {
             hideBar();
             removePencil();
@@ -526,6 +623,7 @@ window.__ModuleLoader__.load({
         };
 
         const showUserPencil = (element) => {
+          if (!owns(element)) return;
           const row = element.closest('[data-chat-flow-kind]');
           if (!row || !isEditableMessageKind(row.getAttribute('data-chat-flow-kind'))) return;
           if (messageTextOf(row) === '') return;
@@ -536,7 +634,7 @@ window.__ModuleLoader__.load({
         // event misses rows already under the pointer (notably right after a
         // hot swap), and the host reveals the whole action row on hover anyway.
         const attachAllUserRows = () => {
-          const rows = document.querySelectorAll('[data-chat-flow-kind]');
+          const rows = root.querySelectorAll('[data-chat-flow-kind]');
           for (const row of rows) {
             const kind = row.getAttribute('data-chat-flow-kind');
             if (!isEditableMessageKind(kind)) continue;
@@ -546,10 +644,11 @@ window.__ModuleLoader__.load({
         };
 
         let attachScheduled = false;
+        let attachTimer;
         const scheduleAttach = () => {
           if (attachScheduled) return;
           attachScheduled = true;
-          setTimeout(() => {
+          attachTimer = setTimeout(() => {
             attachScheduled = false;
             try { attachAllUserRows(); } catch (error) { /* ignore */ }
             repositionBar();
@@ -567,9 +666,10 @@ window.__ModuleLoader__.load({
           if (!target || typeof target.closest !== 'function') return;
           const pencil = target.closest('[data-chat-actions-pencil]');
           if (!pencil) return;
+          const row = pencil.closest('[data-chat-flow-kind]');
+          if (!owns(row)) return;
           event.preventDefault();
           event.stopPropagation();
-          const row = pencil.closest('[data-chat-flow-kind]');
           if (!row || !isEditableMessageKind(row.getAttribute('data-chat-flow-kind'))) return;
           const text = messageTextOf(row);
           if (text === '') return;
@@ -578,6 +678,7 @@ window.__ModuleLoader__.load({
 
         const onKeyDown = (event) => {
           if (event.key !== 'Escape') return;
+          if (sending) return;
           if (editor.style.display !== 'none') { closeEditor(); return; }
           hideBar();
           removePencil();
@@ -594,7 +695,7 @@ window.__ModuleLoader__.load({
         document.addEventListener('pointerover', onUserHover, true);
         document.addEventListener('click', onPencilClick, true);
         const rowObserver = new MutationObserver(scheduleAttach);
-        rowObserver.observe(document.body, { childList: true, subtree: true });
+        rowObserver.observe(root, { childList: true, subtree: true });
         attachAllUserRows();
         document.addEventListener('focusin', onUserHover, true);
         document.addEventListener('keydown', onKeyDown, true);
@@ -603,6 +704,7 @@ window.__ModuleLoader__.load({
 
         return () => {
           clearTimeout(timer);
+          clearTimeout(attachTimer);
           document.removeEventListener('mouseup', schedule, true);
           document.removeEventListener('selectionchange', schedule);
           document.removeEventListener('click', onClick, true);
@@ -617,9 +719,9 @@ window.__ModuleLoader__.load({
           removePencil();
           editor.remove();
         };
-      }, []);
+      }, [props.sessionId]);
 
-      return null;
+      return h('div', { ref: anchor }, h(QuoteDraft, { input, updateQuote: props.updateQuote, t: props.t }));
     }
 
     // ------------------------------------------------------------------
@@ -746,6 +848,7 @@ window.__ModuleLoader__.load({
 
       const [editing, setEditing] = useState(null);
       const [busy, setBusy] = useState(null);
+      const busyRef = useRef(false);
       const [preview, setPreview] = useState(null);
       const [collapsed, setCollapsed] = useState(false);
       const rowCount = queue.length + pending.length;
@@ -765,7 +868,8 @@ window.__ModuleLoader__.load({
 
       const sendNext = async () => {
         const first = queue[0];
-        if (!first || busy !== null) return;
+        if (!first || !queueMutable || busyRef.current) return;
+        busyRef.current = true;
         setBusy(first.id);
         try {
           await wakeQueue(first.id);
@@ -775,12 +879,16 @@ window.__ModuleLoader__.load({
           const detail = error && error.message ? String(error.message) : '';
           notifyError(formatT(t, 'queue.sendFailed') + (detail ? ' · ' + detail : ''));
         } finally {
+          busyRef.current = false;
           setBusy(null);
         }
       };
 
       const saveEdit = async () => {
-        if (editing === null || editing.text.trim() === '') return;
+        if (editing === null || editing.text.trim() === '' || !queueMutable || busyRef.current) return;
+        const row = queue.find((item) => item.id === editing.id);
+        if (!row || attachmentCountOf(row.content) > 0) return;
+        busyRef.current = true;
         setBusy(editing.id);
         try {
           await updateQueue(editing.id, { kind: 'edit', content: [{ type: 'text', text: editing.text }] });
@@ -788,17 +896,21 @@ window.__ModuleLoader__.load({
         } catch (_error) {
           notifyError(formatT(t, 'queue.editFailed'));
         } finally {
+          busyRef.current = false;
           setBusy((current) => (current === editing.id ? null : current));
         }
       };
 
       const removeRow = async (row) => {
+        if (!queueMutable || busyRef.current) return;
+        busyRef.current = true;
         setBusy(row.id);
         try {
           await updateQueue(row.id, { kind: 'remove' });
         } catch (_error) {
           notifyError(formatT(t, 'queue.removeFailed'));
         } finally {
+          busyRef.current = false;
           setBusy((current) => (current === row.id ? null : current));
         }
       };
@@ -808,6 +920,7 @@ window.__ModuleLoader__.load({
         onClick,
         disabled: options && options.disabled ? true : undefined,
         title: options && options.title ? options.title : labelText,
+        'aria-label': options && options.title ? options.title : labelText,
         style: {
           font: FONT,
           height: '20px',
@@ -849,16 +962,20 @@ window.__ModuleLoader__.load({
             onOpen: setPreview
           })),
           isEditing
-            ? h('input', {
+            ? h('textarea', {
               value: editing.text,
               autoFocus: true,
+              rows: 2,
+              name: 'chat-actions-queued-message', autoComplete: 'off',
+              disabled: busy !== null,
+              'aria-label': formatT(t, 'queue.edit'),
               onChange: (event) => setEditing({ id: row.id, text: event.target.value }),
               onKeyDown: (event) => {
-                if (event.key === 'Enter') { event.preventDefault(); saveEdit(); }
+                if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent?.isComposing) { event.preventDefault(); saveEdit(); }
                 else if (event.key === 'Escape') { event.preventDefault(); setEditing(null); }
               },
               style: {
-                flex: '1 1 auto', minWidth: 0, height: '20px', padding: '0 6px',
+                flex: '1 1 auto', minWidth: 0, minHeight: '40px', padding: '3px 6px', resize: 'vertical',
                 borderRadius: '6px', border: TOKEN_BORDER, background: 'var(--dsw-alias-bg-base, transparent)',
                 color: TOKEN_TEXT, font: FONT
               }
@@ -880,15 +997,16 @@ window.__ModuleLoader__.load({
             ),
           isEditing
             ? h('span', { style: { display: 'inline-flex', gap: '4px' } },
-              smallButton(formatT(t, 'queue.save'), saveEdit, { disabled: editing.text.trim() === '' }),
-              smallButton(formatT(t, 'queue.cancel'), () => setEditing(null), { quiet: true })
+              smallButton(formatT(t, 'queue.save'), saveEdit, { disabled: busy !== null || editing.text.trim() === '' }),
+              smallButton(formatT(t, 'queue.cancel'), () => setEditing(null), { quiet: true, disabled: busy !== null })
             )
             : h('span', { style: { display: 'inline-flex', gap: '4px' } },
               smallButton(formatT(t, 'queue.edit'), () => setEditing({ id: row.id, text: text }), {
-                quiet: true, disabled: !queueMutable || text.trim() === ''
+                quiet: true, disabled: !queueMutable || busy !== null || attachments > 0 || text.trim() === '',
+                title: attachments > 0 ? formatT(t, 'queue.attachmentEdit') : formatT(t, 'queue.edit')
               }),
               smallButton('🗑', () => removeRow(row), {
-                quiet: true, disabled: !queueMutable, title: formatT(t, 'queue.remove')
+                quiet: true, disabled: !queueMutable || busy !== null, title: formatT(t, 'queue.remove')
               }),
               smallButton('↑', () => sendNext(), {
                 disabled: !queueMutable || !isFirst || busy !== null,
@@ -915,6 +1033,9 @@ window.__ModuleLoader__.load({
         h('div', {
           'data-chat-actions-queue': '',
           style: {
+            boxSizing: 'border-box', minWidth: 0,
+            width: 'calc(100% - var(--dsh-composer-side-clearance, 0px) - var(--dsh-composer-side-clearance, 0px))',
+            maxWidth: 'var(--dsh-composer-card-max-width, 100%)', marginInline: 'auto',
             display: 'flex', flexDirection: 'column', gap: '2px', padding: '5px 8px',
             marginBottom: '6px', borderRadius: 'var(--dsw-radius-md, 8px)',
             background: 'var(--dsw-alias-bg-module-platform, rgba(127,127,127,.08))',
@@ -946,7 +1067,7 @@ window.__ModuleLoader__.load({
             smallButton(formatT(t, 'queue.send') + ' ↓', () => sendNext(), {
               // Always clickable while paused: this is the only path that moves
               // a paused queue. While a turn runs the host claims it by itself.
-              disabled: busy !== null || running || queue.length === 0,
+              disabled: !queueMutable || busy !== null || running || queue.length === 0,
               title: formatT(t, 'queue.sendHint')
             })
           ),
@@ -968,12 +1089,13 @@ window.__ModuleLoader__.load({
     // Sidebar ask panel (requirement 1, second destination)
     // ------------------------------------------------------------------
     function AskPanel(props) {
-      const { useTabInfo, sendToSession, t, sessionId: standardSessionId } = props;
+      const { useTabInfo, createSideSession, sendToSession, insertSideQuote, SessionProvider, renderFactorySlot, t, sessionId: standardSessionId } = props;
       const info = typeof useTabInfo === 'function' ? useTabInfo() : undefined;
       const params = info && info.tab && info.tab.navigation && info.tab.navigation.params
         ? info.tab.navigation.params
         : {};
       const quoted = typeof params.text === 'string' ? params.text : '';
+      const quoteKey = typeof params.selectionId === 'string' ? params.selectionId : quoted;
       const sessionId = typeof params.sessionId === 'string' && params.sessionId !== ''
         ? params.sessionId
         : standardSessionId;
@@ -981,27 +1103,76 @@ window.__ModuleLoader__.load({
       const [question, setQuestion] = useState('');
       const [sending, setSending] = useState(false);
       const [status, setStatus] = useState(null);
+      const [thread, setThread] = useState(null);
+      const owner = useRef({ alive: true, reference: null, busy: false });
+      const lastQuote = useRef('');
+
+      useEffect(() => {
+        owner.current.alive = true;
+        return () => {
+          owner.current.alive = false;
+          owner.current.reference?.release();
+          owner.current.reference = null;
+        };
+      }, []);
+
+      const addToSide = () => {
+        if (!thread || !insertSideQuote(thread.sessionId, quoted)) {
+          setStatus({ kind: 'error', text: formatT(t, 'tools.quoteFailed') });
+          return false;
+        }
+        lastQuote.current = quoteKey;
+        setStatus(null);
+        return true;
+      };
+      useEffect(() => {
+        if (thread && quoted.trim() !== '' && quoteKey !== lastQuote.current) addToSide();
+      }, [thread, quoted, quoteKey]);
 
       const send = async () => {
-        if (sending) return;
+        if (owner.current.busy) return;
         if (quoted.trim() === '') {
           setStatus({ kind: 'error', text: formatT(t, 'ask.empty') });
           return;
         }
         const asked = question.trim() === '' ? formatT(t, 'ask.defaultQuestion') : question.trim();
-        const payload = asked + '\n\n' + formatT(t, 'ask.quoteLabel') + '：\n' + quoted;
+        const payload = asked + '\n\n' + quoteFrame(quotePayloadOf(quoted));
+        owner.current.busy = true;
         setSending(true);
         setStatus(null);
         try {
-          await sendToSession(sessionId, payload);
-          setStatus({ kind: 'ok', text: formatT(t, 'ask.sent') });
+          if (typeof SessionProvider !== 'function' || typeof renderFactorySlot !== 'function') throw new Error('conversation-renderer-unavailable');
+          let reference = owner.current.reference;
+          if (!reference) {
+            reference = await createSideSession(sessionId);
+            if (!owner.current.alive) { reference.release(); return; }
+            owner.current.reference = reference;
+          }
+          await sendToSession(reference.sessionId, payload);
+          if (!owner.current.alive) return;
+          lastQuote.current = quoteKey;
+          setQuestion('');
+          setThread(reference);
+          setStatus(null);
         } catch (error) {
           const message = error && error.message ? String(error.message) : String(error);
-          setStatus({ kind: 'error', text: formatT(t, 'ask.failed', { message }) });
+          if (owner.current.alive) setStatus({ kind: 'error', text: formatT(t, 'ask.failed', { message }) });
         } finally {
-          setSending(false);
+          owner.current.busy = false;
+          if (owner.current.alive) setSending(false);
         }
       };
+
+      if (thread) return h('div', {
+        'data-chat-actions-ask': '',
+        style: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, minWidth: 0 }
+      },
+        status ? h('div', { role: 'status', style: { padding: '8px', color: TOKEN_TEXT, font: FONT } },
+          status.text,
+          h('button', { type: 'button', onClick: addToSide }, formatT(t, 'tools.addToComposer'))
+        ) : null,
+        h(SessionProvider, { session: thread }, renderFactorySlot('conversation.content', { variant: 'embedded', phase: 'ready', hero: false }))
+      );
 
       return h('div', {
         'data-chat-actions-ask': '',
@@ -1022,6 +1193,8 @@ window.__ModuleLoader__.load({
         }, quoted),
         h('textarea', {
           value: question,
+          name: 'chat-actions-side-question', autoComplete: 'off',
+          'aria-label': formatT(t, 'ask.questionPlaceholder'),
           onChange: (event) => setQuestion(event.target.value),
           onKeyDown: (event) => {
             if (event.key === 'Enter' && !event.shiftKey && !(event.nativeEvent && event.nativeEvent.isComposing)) {
@@ -1047,9 +1220,10 @@ window.__ModuleLoader__.load({
               font: FONT, height: '24px', padding: '0 10px', borderRadius: '7px',
               border: 'none', cursor: 'pointer', background: TOKEN_HOVER, color: TOKEN_TEXT
             }
-          }, formatT(t, 'ask.send')),
+          }, formatT(t, sending ? 'queue.sending' : 'ask.send')),
           status
             ? h('span', {
+              role: 'status',
               style: {
                 opacity: 0.8,
                 color: status.kind === 'error' ? 'var(--dsw-alias-label-error, #d9534f)' : 'inherit'
@@ -1064,6 +1238,7 @@ window.__ModuleLoader__.load({
     // Plugin body
     // ------------------------------------------------------------------
     function apply(ctx) {
+      let quoteCodecReady = false;
       const getService = (name) => {
         try {
           const service = ctx.get(name);
@@ -1140,22 +1315,14 @@ window.__ModuleLoader__.load({
           }
         }
         const id = (handle && handle.requestId) || requestId || newRequestId();
-        const result = await session.prompt(
-          [{ type: 'text', text }],
-          resolvedMode,
-          undefined,
-          id
-        );
-        if (!result || result.ok !== true) {
+        try {
+          const result = await session.prompt([{ type: 'text', text }], resolvedMode, undefined, id);
+          if (!result || result.ok !== true) throw new Error(result?.error?.message || result?.error?.code || 'prompt-failed');
+          return id;
+        } catch (error) {
           try { if (handle && typeof handle.abandon === 'function') handle.abandon(); } catch (_error) { /* ignore */ }
-          const error = result && result.error;
-          const message = error && (error.message || error.code)
-            ? String(error.message || error.code)
-            : 'prompt-failed';
-          console.warn('[chat-actions] prompt rejected:', result && result.error);
-          throw new Error(message);
+          throw error;
         }
-        return id;
       };
 
       /**
@@ -1185,6 +1352,8 @@ window.__ModuleLoader__.load({
        * sent, so the composer stays small but the model still sees everything.
        */
       const insertQuote = (sessionId, text, span) => {
+        // Never create a chip that the submit path cannot serialize.
+        if (!quoteCodecReady) return false;
         const scope = scopeOf(sessionId);
         if (scope === undefined) return false;
         let conversation;
@@ -1261,17 +1430,45 @@ window.__ModuleLoader__.load({
         return viaSpan;
       };
 
+      const updateQuote = (sessionId, reference, text, revision) => {
+        try {
+          const scope = scopeOf(sessionId);
+          const shell = scope?.get('conversation')?.input?.for(scope);
+          const state = shell?.state.getSnapshot();
+          if (!state || state.draftRev !== revision || !['plain', 'claimed'].includes(state.phase)) return false;
+          const draft = replaceQuote(shell.draftSnapshot, reference, text);
+          if (!draft) return false;
+          shell.setDraft(draft);
+          shell.focus();
+          return true;
+        } catch (_error) { return false; }
+      };
+
+      // Retain a separate binding, like dsh-prompt-history; never select it in the main UI.
+      const createSideSession = async (parentId) => {
+        const service = sessions();
+        if (!service?.create || !service?.retain) throw new Error('sessions-unavailable');
+        const parent = service.list?.getSnapshot()?.byId?.[parentId];
+        const id = await service.create(parent?.cwd ? { cwd: parent.cwd } : {});
+        if (id === parentId) throw new Error('side-session-not-isolated');
+        const reference = service.retain(id, { source: 'dsh-chat-actions.side-chat' });
+        try { await reference.ready; return reference; }
+        catch (error) { reference.release(); throw error; }
+      };
+
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'chat-actions: dictionaries');
       try { console.info('[chat-actions] loaded build', BUILD); } catch (_error) { /* ignore */ }
       const t = ctx.locale.bind(NS);
 
-      // Codec-only reference source: it owns quote chips and contributes no @
-      // candidates. `serialize` is what turns a chip into model-visible text.
-      const inputTriggers = getService('inputTriggers');
-      if (inputTriggers && typeof inputTriggers.registerSource === 'function') {
-        ctx.effect(() => {
+      // Own the codec for the service's lifetime, not just its startup state.
+      // Cordis re-enters this injection when the service arrives or is replaced;
+      // the stable source name also restores serialization for existing chips.
+      ctx.inject(['inputTriggers'], (scope) => {
+        scope.effect(() => {
+          const inputTriggers = scope.inputTriggers;
+          if (!inputTriggers || typeof inputTriggers.registerSource !== 'function') return () => {};
           try {
-            return inputTriggers.registerSource({
+            const unregister = inputTriggers.registerSource({
               trigger: '@',
               name: QUOTE_SOURCE,
               order: 1000,
@@ -1282,12 +1479,18 @@ window.__ModuleLoader__.load({
                 serialize: (ref) => Promise.resolve(quoteProject(ref))
               }
             });
+            quoteCodecReady = true;
+            return () => {
+              quoteCodecReady = false;
+              unregister();
+            };
           } catch (error) {
-            console.warn('[chat-actions] quote codec registration failed; falling back to plain text', error);
+            quoteCodecReady = false;
+            console.warn('[chat-actions] quote codec registration failed; quote insertion disabled', error);
             return () => {};
           }
         }, 'chat-actions: quote codec');
-      }
+      });
 
       // ---- sentinel bookkeeping ------------------------------------------
       // A "send now" wakes the Host with one throwaway prompt so the oldest
@@ -1298,10 +1501,10 @@ window.__ModuleLoader__.load({
       const sentinelIds = new Set();          // rpcIds hidden from the bar
       const sentinelSession = new Map();      // rpcId -> sessionId
       const sentinelStarted = new Map();      // rpcId -> startedAt (ms)
-      /** Sessions whose queue is waiting on a wake. The supported send path
-       *  (`conversation.send`) does not hand back the rpcId, so the sweeper also
-       *  matches the sentinel by its text for as long as a wake is outstanding. */
-      const wakePending = new Map();          // sessionId -> startedAt (ms)
+      const wakeFlights = new Map();          // sessionId -> in-flight Promise
+      const wakeRequested = new Map();        // acknowledged wake awaiting native claim
+      const sentinelSubscriptions = new Map();
+      const removingSentinels = new Set();
       const WAKE_TTL_MS = 90_000;
 
       const inboxSnapshotOf = (sessionId) => {
@@ -1315,50 +1518,23 @@ window.__ModuleLoader__.load({
       };
 
       const forgetSentinel = (rpcId) => {
+        const sessionId = sentinelSession.get(rpcId);
         sentinelIds.delete(rpcId);
         sentinelSession.delete(rpcId);
         sentinelStarted.delete(rpcId);
+        if (![...sentinelSession.values()].includes(sessionId)) {
+          sentinelSubscriptions.get(sessionId)?.();
+          sentinelSubscriptions.delete(sessionId);
+        }
       };
 
       const sweepSentinels = () => {
         const now = Date.now();
-        // One pass may match the same sentinel row twice (by text for a
-        // `conversation.send` wake and by rpcId for a facade wake); the second
-        // remove would only fail as queue-item-not-found.
-        const scheduled = new Set();
-        // Sessions woken through `conversation.send`: match the sentinel by text,
-        // because that path never returns the rpcId the row is keyed by.
-        for (const [sessionId, started] of [...wakePending]) {
-          if (now - started > WAKE_TTL_MS) {
-            wakePending.delete(sessionId);
-            continue;
-          }
-          const inbox = inboxSnapshotOf(sessionId);
-          const rows = (inbox && inbox['next-turn']) || [];
-          const sentinelRow = rows.find((candidate) => textOf(candidate && candidate.content).trim() === SENTINEL_TEXT);
-          if (!sentinelRow) {
-            // Either the host already claimed it (the wake worked) or it has not
-            // landed yet; either way there is nothing left to clean up.
-            if (!rows.some((candidate) => textOf(candidate && candidate.content).trim() === SENTINEL_TEXT)) {
-              wakePending.delete(sessionId);
-            }
-            continue;
-          }
-          const conversation = conversationOf(sessionId);
-          if (!conversation || typeof conversation.updateQueue !== 'function') continue;
-          if (scheduled.has(sentinelRow.id)) continue;
-          scheduled.add(sentinelRow.id);
-          Promise.resolve()
-            .then(() => conversation.updateQueue(sentinelRow.id, { kind: 'remove' }))
-            .then(() => {
-              wakePending.delete(sessionId);
-              // The row also carries the facade rpcId when a fallback wake ran;
-              // drop that bookkeeping so the id does not linger.
-              const rpcId = sentinelRow.source && sentinelRow.source.rpcId;
-              if (rpcId) forgetSentinel(rpcId);
-            }, () => { /* retry on the next tick */ });
+        for (const [sessionId, wake] of wakeRequested) {
+          const rows = inboxSnapshotOf(sessionId)?.['next-turn'] || [];
+          if (now - wake.started > WAKE_TTL_MS || sessionOf(sessionId)?.getSnapshot().running === true
+            || !rows.some((row) => row.id === wake.itemId)) wakeRequested.delete(sessionId);
         }
-
         if (sentinelSession.size === 0) return;
         for (const [rpcId, sessionId] of [...sentinelSession]) {
           const started = sentinelStarted.get(rpcId) || now;
@@ -1372,69 +1548,66 @@ window.__ModuleLoader__.load({
             const source = candidate && candidate.source;
             return source && source.kind === 'user' && source.rpcId === rpcId;
           });
-          if (!row) {
-            // The row is gone: either the host claimed it (the wake worked) or
-            // the text pass already removed it. Keep a short grace period so a
-            // prompt that has not landed yet is not mistaken for a delivered one.
-            if (now - started > 3000) forgetSentinel(rpcId);
-            continue;
-          }
+          // Absence can mean a delayed projection. Retain its identity until TTL.
+          if (!row || removingSentinels.has(rpcId)) continue;
           const conversation = conversationOf(sessionId);
           if (!conversation || typeof conversation.updateQueue !== 'function') continue;
-          if (scheduled.has(row.id)) continue;
-          scheduled.add(row.id);
+          removingSentinels.add(rpcId);
           Promise.resolve()
             .then(() => conversation.updateQueue(row.id, { kind: 'remove' }))
-            .then(() => forgetSentinel(rpcId), () => { /* retry on the next tick */ });
+            .then(() => forgetSentinel(rpcId), () => { /* retry on the next tick */ })
+            .finally(() => removingSentinels.delete(rpcId));
         }
       };
 
       ctx.effect(() => {
         const timer = window.setInterval(sweepSentinels, 800);
-        return () => window.clearInterval(timer);
+        return () => {
+          window.clearInterval(timer);
+          for (const off of sentinelSubscriptions.values()) off();
+          sentinelSubscriptions.clear();
+          sentinelIds.clear();
+          sentinelSession.clear();
+          sentinelStarted.clear();
+          wakeRequested.clear();
+        };
       }, 'chat-actions: sentinel sweeper');
 
-      /**
-       * Wake a paused conversation so the Host claims its oldest queued message.
-       *
-       * Tries the supported paths in order and reports every failure instead of
-       * one opaque sentence — this is the only way a paused queue can move, so a
-       * silent miss is fatal:
-       *   1. `conversation.send(text)` — exactly what the composer's text sender
-       *      calls (`prompt(content, 'queue')` on the scoped session).
-       *   2. the session facade's `prompt` — the pre-existing fallback, kept for
-       *      hosts that expose no `send`.
-       */
-      const wakeSession = async (sessionId) => {
-        const attempts = [];
-        const conversation = conversationOf(sessionId);
-        if (conversation && typeof conversation.send === 'function') {
-          attempts.push(['conversation.send', () => conversation.send(SENTINEL_TEXT)]);
-        }
-        attempts.push(['session.prompt', () => {
+      // Use the native row while running. Paused hosts need a wake prompt; its
+      // exact rpcId is registered BEFORE sending, with no pending transcript echo.
+      const wakeSession = (sessionId, itemId) => {
+        if (wakeFlights.has(sessionId)) return wakeFlights.get(sessionId);
+        const flight = Promise.resolve().then(async () => {
+          const session = sessionOf(sessionId);
+          if (!session?.prompt) throw new Error('session-not-attached');
+          const rows = inboxSnapshotOf(sessionId)?.['next-turn'] || [];
+          if (!rows.some((row) => row.id === itemId)) throw new Error('queue-item-not-found');
+          if (session.getSnapshot().running === true) {
+            const result = await session.updateQueue(itemId, { kind: 'steer' });
+            if (result?.ok !== true) throw new Error(result?.error?.message || result?.error?.code || 'queue-steer-failed');
+            return;
+          }
+          if (wakeRequested.has(sessionId)) throw new Error(formatT(t, 'queue.waking'));
+          wakeRequested.set(sessionId, { itemId, started: Date.now() });
           const rpcId = newRequestId();
           sentinelIds.add(rpcId);
           sentinelSession.set(rpcId, sessionId);
           sentinelStarted.set(rpcId, Date.now());
-          return sendAsPrompt(sessionId, SENTINEL_TEXT, 'queue', rpcId).catch((error) => {
-            forgetSentinel(rpcId);
-            throw error;
-          });
-        }]);
-
-        const failures = [];
-        for (const [name, run] of attempts) {
-          wakePending.set(sessionId, Date.now());
-          try {
-            await run();
-            return;
-          } catch (error) {
-            wakePending.delete(sessionId);
-            failures.push(name + ': ' + (error && error.message ? error.message : String(error)));
-            console.warn('[chat-actions] queue wake via ' + name + ' failed:', error);
+          const face = session.projections?.faceOf('inbox');
+          if (!sentinelSubscriptions.has(sessionId) && typeof face?.subscribe === 'function') {
+            sentinelSubscriptions.set(sessionId, face.subscribe(sweepSentinels));
           }
-        }
-        throw new Error(failures.join(' / '));
+          // Transport failure is ambiguous: keep this identity for late cleanup.
+          const result = await session.prompt([{ type: 'text', text: SENTINEL_TEXT }], 'queue', undefined, rpcId);
+          if (result?.ok !== true) {
+            forgetSentinel(rpcId);
+            wakeRequested.delete(sessionId);
+            throw new Error(result?.error?.message || result?.error?.code || 'queue-wake-failed');
+          }
+          sweepSentinels();
+        }).finally(() => wakeFlights.delete(sessionId));
+        wakeFlights.set(sessionId, flight);
+        return flight;
       };
 
       // ---- requirements 1 + 3: floating selection toolbar / message editor ----
@@ -1451,6 +1624,7 @@ window.__ModuleLoader__.load({
               sidebar.openTab(ASK_KIND, {
                 params: {
                   text,
+                  selectionId: newRequestId(),
                   sessionId: typeof targetSessionId === 'string' && targetSessionId !== '' ? targetSessionId : sessionId
                 }
               });
@@ -1459,8 +1633,9 @@ window.__ModuleLoader__.load({
               return false;
             }
           },
-          sendPrompt: (text) => sendAsPrompt(sessionId, text, 'steer'),
-          insertQuote: (text, span) => insertQuote(sessionId, text, span)
+          sendPrompt: (text) => sendAsPrompt(sessionId, text, 'queue'),
+          insertQuote: (text, span) => insertQuote(sessionId, text, span),
+          updateQuote: (reference, text, revision) => updateQuote(sessionId, reference, text, revision)
         })
       }, ChatTools));
 
@@ -1486,8 +1661,14 @@ window.__ModuleLoader__.load({
             return undefined;
           })();
           return {
-            updateQueue: (itemId, action) => {
-              if (!conversation || typeof conversation.updateQueue !== 'function') {
+            updateQueue: async (itemId, action) => {
+              const session = binding?.session;
+              if (typeof session?.updateQueue === 'function') {
+                const result = await session.updateQueue(itemId, action);
+                if (result?.ok !== true) throw new Error(result?.error?.message || result?.error?.code || 'queue-update-failed');
+                return;
+              }
+              if (typeof conversation?.updateQueue !== 'function') {
                 return Promise.reject(new Error('conversation service unavailable'));
               }
               return conversation.updateQueue(itemId, action);
@@ -1498,7 +1679,7 @@ window.__ModuleLoader__.load({
             loadImage: (attachment) => loadImageFor(sessionId, attachment),
             // Wake the driver so the Host claims the oldest queued message
             // natively (attachments included); the sweeper removes the sentinel.
-            wakeQueue: () => wakeSession(sessionId),
+            wakeQueue: (itemId) => wakeSession(sessionId, itemId),
             notify: (level, text) => {
               try {
                 if (shell && typeof shell.notify === 'function') shell.notify(level, text);
@@ -1524,11 +1705,14 @@ window.__ModuleLoader__.load({
         name: 'sidebar.right.pane.tab',
         key: ASK_ID,
         locale: NS,
+        children: { 'conversation.session': { kind: 'single', scope: 'session' } },
         inject: (sessionId) => ({
+          createSideSession: (parentId) => createSideSession(parentId || sessionId),
+          insertSideQuote: (targetId, text) => insertQuote(targetId, text),
           sendToSession: (targetSessionId, text) => sendAsPrompt(
-            typeof targetSessionId === 'string' && targetSessionId !== '' ? targetSessionId : sessionId,
+            targetSessionId,
             text,
-            'steer'
+            'queue'
           )
         })
       }, AskPanel));
@@ -1538,7 +1722,7 @@ window.__ModuleLoader__.load({
       inject: ['slots', 'locale'],
       apply,
       // Pure action contract used by the toolbar itself and regression tests.
-      quoteActions: { toolsApiOf, addSelectedQuote, isEditableMessageKind }
+      quoteActions: { toolsApiOf, addSelectedQuote, isEditableMessageKind, replaceQuote }
     };
   }
 });
