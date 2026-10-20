@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
     const NS = 'chatActions';
     /** Build marker: bumped on every behaviour change so the running page can
      *  prove which bundle it actually loaded (see console + toolbar tooltip). */
-    const BUILD = 'v17-read-only-side-chat+effort-memory-native-settings';
+    const BUILD = 'v18-side-chat-model-and-stop+effort-memory-native-settings';
     const ASK_KIND = 'chat-actions-ask';
     const ASK_ID = 'dsh-chat-actions/ask';
     const TOOLS_ID = 'chat-actions-tools';
@@ -177,7 +177,19 @@ window.__ModuleLoader__.load({
       'editor.unavailable': '无法从这条消息之前继续，原消息仍会留在当前会话',
       'editor.textOnly': '仅重发文字；原消息的附件不会随之发送。这条消息之后的回复也会离开当前会话',
       'ask.title': '选区提问',
-      'ask.readOnly': '只读侧聊 · 继承原对话模型 · 不执行工具',
+      'ask.readOnly': '只读侧聊 · 不执行工具',
+      'ask.model': '侧聊模型',
+      'ask.effort': '推理等级',
+      'ask.defaultEffort': '默认',
+      'ask.inheritModel': '继承原对话模型',
+      'ask.modelsLoading': '正在加载模型…',
+      'ask.modelsUnavailable': '模型列表暂不可用，仍可继承原对话模型',
+      'ask.reloadModels': '重新加载',
+      'ask.nextModel': '模型只用于侧聊；切换后从下一次回复生效',
+      'ask.modelChanging': '正在切换模型…',
+      'ask.generating': '正在生成，按 Esc 或点击停止',
+      'ask.stopping': '正在停止…',
+      'ask.stopHint': '停止生成（Esc），保留已有回复',
       'ask.contextUnavailable': '无法定位已完成的原消息，请在已完成的回复中重新划选。',
       'ask.stop': '停止生成',
       'ask.stopped': '已停止',
@@ -243,7 +255,19 @@ window.__ModuleLoader__.load({
       'editor.unavailable': 'Cannot continue from before this message, so it stays in the current session',
       'editor.textOnly': 'Resends text only; original attachments are not included. Replies after this message also leave the current session',
       'ask.title': 'Ask about selection',
-      'ask.readOnly': 'Read-only · Parent model · No tools',
+      'ask.readOnly': 'Read-only · No tools',
+      'ask.model': 'Side Chat model',
+      'ask.effort': 'Reasoning effort',
+      'ask.defaultEffort': 'Default',
+      'ask.inheritModel': 'Inherit parent model',
+      'ask.modelsLoading': 'Loading models…',
+      'ask.modelsUnavailable': 'Model list unavailable; the parent model can still be inherited',
+      'ask.reloadModels': 'Reload',
+      'ask.nextModel': 'Side Chat only; changes apply to the next reply',
+      'ask.modelChanging': 'Changing model…',
+      'ask.generating': 'Generating. Press Esc or click Stop',
+      'ask.stopping': 'Stopping…',
+      'ask.stopHint': 'Stop (Esc) and keep the partial reply',
       'ask.contextUnavailable': 'The completed source message could not be located. Select it again.',
       'ask.stop': 'Stop',
       'ask.stopped': 'Stopped',
@@ -1449,46 +1473,88 @@ window.__ModuleLoader__.load({
     // Adapted from dsh-side-chat's controller: admission, cancellation and close
     // are explicit so failed connections cannot silently resubmit an admitted turn.
     function createSideChatController(remoteFactory, publish) {
-      let state = { messages: [], busy: false, modelSelection: null, error: '' };
+      let state = { messages: [], busy: false, stopping: false, selecting: false, hasChat: false, modelSelection: null, error: '' };
       let generation = 0;
       let remote, chatId, creating, active, pending, closing, parentSessionId;
+      let modelOperation = 0;
+      let modelAbort;
       const emit = (patch) => { state = { ...state, ...patch }; publish(state); };
       const updateReply = (requestId, patch) => emit({ messages: state.messages.map((message) =>
         message.id === requestId + ':assistant' ? { ...message, ...patch } : message) });
+      const disposeStream = (stream) => {
+        try { void Promise.resolve(stream?.dispose?.()).catch(() => {}); }
+        catch (_error) { /* explicit close/cancel remains available */ }
+      };
       const controller = {
         getSnapshot: () => state,
+        async selectModel(selection) {
+          if (closing || state.selecting || (state.busy && !chatId)) return false;
+          const current = generation;
+          const operation = ++modelOperation;
+          const targetId = chatId;
+          modelAbort?.abort();
+          const abort = new AbortController();
+          modelAbort = abort;
+          emit({ selecting: true, error: '' });
+          try {
+            let selected = selection;
+            if (targetId) {
+              const endpoint = await remoteFactory();
+              if (current !== generation || operation !== modelOperation) return false;
+              remote = endpoint;
+              const result = await endpoint.selectModel({ chatId: targetId, ...selection }, abort.signal);
+              selected = result.selected;
+            }
+            if (current !== generation || operation !== modelOperation) return false;
+            emit({ modelSelection: selected });
+            return true;
+          } catch (error) {
+            if (current === generation && operation === modelOperation) emit({ error: String(error?.message || error) });
+            return false;
+          } finally {
+            if (current === generation && operation === modelOperation) emit({ selecting: false });
+          }
+        },
         async send(context, text, onAdmitted) {
-          if (state.busy || closing) return;
+          if (state.busy || state.stopping || state.selecting || closing) return;
           const question = text.trim();
           if (!question) return;
           const current = generation;
           const abort = new AbortController();
           active = { abort, cancelled: false };
           const flight = active;
+          const isCurrent = () => current === generation && active === flight;
           emit({ busy: true, error: '' });
           let admitted = false;
           const request = pending?.text === question ? pending : { requestId: newRequestId(), text: question };
+          flight.requestId = request.requestId;
           pending = request;
           try {
-            remote = await remoteFactory();
-            if (current !== generation) return;
+            const endpoint = await remoteFactory();
+            if (!isCurrent()) return;
+            remote = endpoint;
             if (chatId && context?.parentSessionId !== parentSessionId) throw new Error('Close the previous Side Chat before changing parent conversations.');
             if (!chatId) {
               if (!Number.isSafeInteger(context?.atSeq)) throw new Error('Select a message from a completed turn.');
-              creating = remote.create(context, abort.signal);
+              creating = remote.create({ ...context, ...(state.modelSelection ? { modelSelection: state.modelSelection } : {}) }, abort.signal);
+              flight.creating = creating;
               const created = await creating;
-              if (current !== generation) return;
+              if (!isCurrent()) {
+                // Close a late create even if a carrier ignored our abort.
+                if (flight.cancelled) void remote.close({ chatId: created.chatId }).catch(() => {});
+                return;
+              }
               chatId = created.chatId;
               parentSessionId = context.parentSessionId;
               creating = null;
-              emit({ modelSelection: created.modelSelection });
+              emit({ hasChat: true, modelSelection: created.modelSelection });
             }
             abort.signal.throwIfAborted();
             const stream = remote.stream({ chatId, ...request }, abort.signal);
             flight.stream = stream;
             let terminal = false;
             for await (const event of stream) {
-              if (current !== generation) break;
+              if (!isCurrent()) break;
               if (event.type === 'started') {
                 if (admitted || event.requestId !== request.requestId) throw new Error('Invalid Side Chat admission.');
                 admitted = true;
@@ -1496,7 +1562,7 @@ window.__ModuleLoader__.load({
                 emit({ messages: [...state.messages,
                   { id: request.requestId + ':user', role: 'user', text: question, status: 'complete',
                     selectedText: state.messages.length ? undefined : context.selectedText },
-                  { id: request.requestId + ':assistant', role: 'assistant', text: '', reasoning: '', status: 'streaming' }
+                  { id: request.requestId + ':assistant', role: 'assistant', text: '', reasoning: '', status: 'streaming', modelSelection: event.modelSelection }
                 ] });
                 onAdmitted?.();
               } else if (event.type === 'content' && admitted) {
@@ -1510,15 +1576,15 @@ window.__ModuleLoader__.load({
                 throw new Error(event.error.message);
               } else throw new Error('Invalid Side Chat stream response.');
             }
-            if (current === generation && !terminal && !flight.cancelled) throw new Error('The connection ended before the reply completed.');
+            if (isCurrent() && !terminal && !flight.cancelled) throw new Error('The connection ended before the reply completed.');
           } catch (error) {
-            if (current === generation) {
+            if (isCurrent()) {
               if (admitted) updateReply(request.requestId, { status: flight.cancelled ? 'stopped' : 'error' });
               emit({ error: flight.cancelled ? '' : String(error?.message || error) });
             }
           } finally {
-            try { flight.stream?.dispose?.(); } catch (_error) { /* explicit close/cancel remains available */ }
-            if (current === generation) {
+            disposeStream(flight.stream);
+            if (isCurrent()) {
               if (flight.cancelled && admitted) updateReply(request.requestId, { status: 'stopped' });
               active = null;
               emit({ busy: false });
@@ -1528,18 +1594,26 @@ window.__ModuleLoader__.load({
         async stop() {
           const flight = active;
           if (!flight) return;
+          const current = generation;
           flight.cancelled = true;
+          active = null;
+          if (creating === flight.creating) creating = null;
           pending = null;
+          updateReply(flight.requestId, { status: 'stopped' });
+          emit({ busy: false, stopping: true, error: '' });
           flight.abort.abort();
-          try { flight.stream?.dispose?.(); } catch (_error) { /* still send cancel */ }
+          disposeStream(flight.stream);
           try { if (remote && chatId) await remote.cancel({ chatId }); }
-          catch (error) { emit({ error: String(error?.message || error) }); }
+          catch (error) { if (current === generation) emit({ error: String(error?.message || error) }); }
+          finally { if (current === generation) emit({ stopping: false }); }
         },
         close() {
           if (closing) return closing;
           ++generation;
+          ++modelOperation;
+          modelAbort?.abort();
           active?.abort.abort();
-          try { active?.stream?.dispose?.(); } catch (_error) { /* still send close */ }
+          disposeStream(active?.stream);
           const id = chatId;
           const pendingCreate = creating;
           closing = Promise.resolve().then(async () => {
@@ -1549,11 +1623,11 @@ window.__ModuleLoader__.load({
               if (remote && target) await remote.close({ chatId: target });
             } catch (error) {
               chatId = target;
-              emit({ busy: false, error: String(error?.message || error) });
+              emit({ busy: false, stopping: false, selecting: false, error: String(error?.message || error) });
               throw error;
             }
             chatId = null; creating = null; active = null; pending = null; parentSessionId = null;
-            emit({ messages: [], busy: false, modelSelection: null, error: '' });
+            emit({ messages: [], busy: false, stopping: false, selecting: false, hasChat: false, modelSelection: null, error: '' });
           }).finally(() => { closing = null; });
           return closing;
         }
@@ -1562,24 +1636,55 @@ window.__ModuleLoader__.load({
     }
 
     function AskPanel(props) {
-      const { useTabInfo, sideChatRemote, insertDiscussion, contextFor, t } = props;
+      const { useTabInfo, sideChatRemote, insertDiscussion, contextFor, modelDirectory, t } = props;
       const params = useTabInfo?.()?.tab?.navigation?.params || {};
       const quoted = typeof params.text === 'string' ? params.text : '';
       const parentId = params.sessionId || props.sessionId;
       const quoteKey = params.selectionId || quoted;
       const [question, setQuestion] = useState('');
-      const [state, setState] = useState({ messages: [], busy: false, modelSelection: null, error: '' });
+      const [state, setState] = useState({ messages: [], busy: false, stopping: false, selecting: false, hasChat: false, modelSelection: null, error: '' });
       const [notice, setNotice] = useState('');
+      const [catalog, setCatalog] = useState({ groups: [], status: 'loading', error: null, failures: [] });
+      const [catalogError, setCatalogError] = useState('');
       const owner = useRef({ alive: true, controller: null, context: null, parentId, quoteKey, discussionId: newRequestId() });
       const log = useRef(null);
+      const followOutput = useRef(true);
       if (!owner.current.controller) owner.current.controller = createSideChatController(sideChatRemote, (value) => {
         if (owner.current.alive) setState(value);
       });
       const controller = owner.current.controller;
+      const reloadModels = async () => {
+        const directory = owner.current.directory;
+        if (!directory) return;
+        setCatalogError('');
+        try { await directory.load(); }
+        catch (error) {
+          if (owner.current.alive && owner.current.directory === directory) setCatalogError(String(error?.message || error));
+        }
+      };
       useEffect(() => {
         owner.current.alive = true;
         return () => { owner.current.alive = false; void controller.close().catch(() => {}); };
       }, []);
+      useEffect(() => {
+        let directory;
+        try { directory = modelDirectory?.(parentId); }
+        catch (error) { setCatalogError(String(error?.message || error)); }
+        owner.current.directory = directory;
+        if (!directory?.store) {
+          setCatalog({ groups: [], status: 'ready', error: null, failures: [] });
+          setCatalogError(formatT(t, 'ask.modelsUnavailable'));
+          return;
+        }
+        const update = () => { if (owner.current.alive) setCatalog(directory.store.getSnapshot()); };
+        update();
+        const unsubscribe = directory.store.subscribe(update);
+        void reloadModels();
+        return () => {
+          unsubscribe?.();
+          if (owner.current.directory === directory) owner.current.directory = null;
+        };
+      }, [modelDirectory, parentId]);
       useEffect(() => {
         const current = owner.current;
         if (current.parentId !== parentId) {
@@ -1595,7 +1700,9 @@ window.__ModuleLoader__.load({
         current.quoteKey = quoteKey;
         if (!controller.getSnapshot().messages.length) current.context = null;
       }, [parentId, quoteKey]);
-      useEffect(() => { if (log.current) log.current.scrollTop = log.current.scrollHeight; }, [state.messages]);
+      useEffect(() => {
+        if (followOutput.current && log.current) log.current.scrollTop = log.current.scrollHeight;
+      }, [state.messages]);
       const send = async () => {
         const draft = question;
         const asked = draft.trim() || (state.messages.length ? '' : formatT(t, 'ask.defaultQuestion'));
@@ -1605,6 +1712,7 @@ window.__ModuleLoader__.load({
           try { owner.current.context = contextFor(parentId, params.origin, quoted); }
           catch (error) { setNotice(String(error?.message || error)); return; }
         }
+        followOutput.current = true;
         await controller.send(owner.current.context, asked, () => setQuestion((value) => value === draft ? '' : value));
       };
       const add = () => {
@@ -1613,21 +1721,49 @@ window.__ModuleLoader__.load({
           + (message.role === 'user' ? '用户：' : '助手：') + message.text).join('\n\n');
         setNotice(insertDiscussion(parentId, text, owner.current.discussionId) ? formatT(t, 'ask.added') : formatT(t, 'tools.quoteFailed'));
       };
-      const buttonStyle = { font: FONT, minHeight: '28px', padding: '3px 10px', borderRadius: '7px',
-        border: TOKEN_BORDER, background: TOKEN_HOVER, color: TOKEN_TEXT, cursor: 'pointer' };
+      // Read the parent catalog only. directory.select() would change the main conversation.
+      const choices = (catalog.groups || []).flatMap((group) => group.models.map((model) => ({
+        group, model, key: JSON.stringify([group.id, model.id])
+      })));
+      const selection = state.modelSelection;
+      const selectedKey = selection ? JSON.stringify([selection.provider, selection.model]) : '';
+      const choice = choices.find((item) => item.key === selectedKey);
+      const reasoning = choice?.model.reasoning;
+      const locked = state.selecting || state.stopping || (state.busy && !state.hasChat);
+      const modelIssue = catalogError || catalog.error || (catalog.failures || []).map((failure) => failure.name + ': ' + failure.message).join('; ');
+      const controlStyle = { minWidth: 0, width: '100%', boxSizing: 'border-box', minHeight: '32px', padding: '4px 8px',
+        border: TOKEN_BORDER, borderRadius: '7px', background: TOKEN_BG, color: TOKEN_TEXT, font: FONT };
+      const buttonStyle = { font: FONT, minHeight: '32px', padding: '4px 10px', borderRadius: '7px',
+        border: TOKEN_BORDER, background: TOKEN_HOVER, color: TOKEN_TEXT };
       return h('div', { 'data-chat-actions-ask': '', style: {
         display: 'flex', flexDirection: 'column', gap: '10px', height: '100%', minHeight: 0,
-        minWidth: 0, boxSizing: 'border-box', padding: '12px', color: TOKEN_TEXT, font: FONT
+        minWidth: 0, overflow: 'hidden', boxSizing: 'border-box', padding: '12px', color: TOKEN_TEXT, font: FONT
       } },
-        h('div', { style: { color: TOKEN_MUTED, fontSize: '12px' } }, formatT(t, 'ask.readOnly'),
-          state.modelSelection ? ' · ' + state.modelSelection.model : ''),
+        h('style', null, `
+          [data-chat-actions-ask] button { cursor: pointer; }
+          [data-chat-actions-ask] :is(button, select):disabled { opacity: .5; cursor: not-allowed; }
+          [data-chat-actions-ask] :is(button, select):not(:disabled):hover { border-color: currentColor; }
+          [data-chat-actions-ask] :is(button, select, textarea):focus-visible { outline: 2px solid var(--dsw-alias-label-primary, currentColor); outline-offset: 2px; }
+          [data-chat-actions-ask] [data-side-chat-message], [data-chat-actions-ask] [data-side-chat-message] > * { min-width: 0; max-width: 100%; box-sizing: border-box; }
+          [data-chat-actions-ask] [data-side-chat-message] :is(pre, table) { max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; }
+          [data-chat-actions-ask] [data-side-chat-message] pre { white-space: pre; }
+          [data-chat-actions-ask] [data-side-chat-message] table { display: block; }
+          [data-chat-actions-ask] [data-side-chat-message] :is(img, video) { max-width: 100%; height: auto; }
+        `),
+        h('div', { style: { color: TOKEN_MUTED, fontSize: '12px', flexShrink: 0 } }, formatT(t, 'ask.readOnly')),
         h('details', { open: !state.messages.length, style: { flexShrink: 0, maxHeight: '30%', overflow: 'auto' } },
           h('summary', { style: { cursor: 'pointer' } }, formatT(t, 'ask.quoteLabel')),
           h('div', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', padding: '8px', border: TOKEN_BORDER, borderRadius: '8px' } }, quoted)),
-        h('div', { ref: log, role: 'log', 'aria-label': formatT(t, 'ask.title'),
-          style: { flex: 1, overflow: 'auto', minHeight: 0, overflowWrap: 'anywhere' } },
-          state.messages.map((message) => h('article', { key: message.id, 'data-role': message.role, style: { marginBottom: '16px' } },
-            h('div', { style: { fontSize: '12px', color: TOKEN_MUTED, marginBottom: '4px' } }, formatT(t, message.role === 'user' ? 'ask.user' : 'ask.assistant')),
+        h('div', { ref: log, role: 'log', 'aria-label': formatT(t, 'ask.title'), 'aria-live': 'off',
+          onScroll: (event) => {
+            const element = event.currentTarget;
+            followOutput.current = element.scrollHeight - element.clientHeight - element.scrollTop <= 1;
+          },
+          style: { flex: 1, overflowY: 'auto', overflowX: 'hidden', minHeight: 0, minWidth: 0, overscrollBehavior: 'contain', overflowWrap: 'anywhere' } },
+          state.messages.map((message) => h('article', { key: message.id, 'data-role': message.role, 'data-side-chat-message': '', style: { marginBottom: '16px' } },
+            h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '8px', fontSize: '12px', color: TOKEN_MUTED, marginBottom: '4px' } },
+              formatT(t, message.role === 'user' ? 'ask.user' : 'ask.assistant'),
+              message.modelSelection ? h('span', null, message.modelSelection.model) : null),
             message.selectedText ? h('details', null, h('summary', { style: { cursor: 'pointer', color: TOKEN_MUTED } }, formatT(t, 'ask.quoteLabel')),
               h('div', { style: { whiteSpace: 'pre-wrap' } }, message.selectedText)) : null,
             message.reasoning ? h('details', null, h('summary', { style: { cursor: 'pointer', color: TOKEN_MUTED } }, formatT(t, 'ask.reasoning')),
@@ -1635,31 +1771,63 @@ window.__ModuleLoader__.load({
             message.role === 'assistant' ? h(MarkdownText, { text: message.text, streaming: message.status === 'streaming',
               labels: { code: { copyLabel: formatT(t, 'ask.copy'), copiedLabel: formatT(t, 'ask.copied') }, footnotes: formatT(t, 'ask.footnotes') } })
               : h('div', { style: { whiteSpace: 'pre-wrap' } }, message.text),
-            message.status === 'stopped' ? h('div', { style: { color: TOKEN_MUTED } }, formatT(t, 'ask.stopped')) : null)),
-          state.busy ? h('div', { role: 'status', style: { color: TOKEN_MUTED } }, formatT(t, 'queue.sending')) : null),
-        h('textarea', { value: question, name: 'chat-actions-side-question', autoComplete: 'off', rows: 3,
-          'aria-label': formatT(t, 'ask.questionPlaceholder'), placeholder: formatT(t, 'ask.questionPlaceholder'),
-          onChange: (event) => setQuestion(event.target.value),
-          onKeyDown: (event) => {
-            if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && !event.nativeEvent?.isComposing) {
-              event.preventDefault(); if (!state.busy) void send();
-            }
-          },
-          style: { boxSizing: 'border-box', width: '100%', minHeight: '62px', padding: '8px',
-            borderRadius: '8px', border: TOKEN_BORDER, background: 'var(--dsw-alias-bg-base, transparent)',
-            color: TOKEN_TEXT, font: FONT, resize: 'vertical', flexShrink: 0 }
-        }),
-        h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', flexShrink: 0 } },
-          h('button', { type: 'button', disabled: state.busy, onClick: send, style: buttonStyle }, formatT(t, 'ask.send')),
-          state.busy ? h('button', { type: 'button', onClick: () => controller.stop(), style: buttonStyle }, formatT(t, 'ask.stop')) : null,
-          h('button', { type: 'button', disabled: state.busy || !state.messages.some((message) => message.role === 'assistant' && message.text),
-            onClick: add, style: buttonStyle }, formatT(t, 'tools.addToComposer')),
-          h('button', { type: 'button', disabled: state.busy, onClick: async () => {
-            try { await controller.close(); owner.current.context = null; owner.current.discussionId = newRequestId(); setNotice(''); }
-            catch (error) { setNotice(String(error?.message || error)); }
-          }, style: buttonStyle }, formatT(t, 'ask.new'))),
-        state.error || notice ? h('div', { role: 'status', style: { flexShrink: 0, overflowWrap: 'anywhere',
-          color: state.error ? 'var(--dsw-alias-label-error, #d9534f)' : TOKEN_MUTED } }, state.error || notice) : null
+            message.status === 'stopped' ? h('div', { style: { color: TOKEN_MUTED } }, formatT(t, 'ask.stopped')) : null))),
+        h('div', { 'data-side-chat-composer': '', style: { display: 'flex', flexDirection: 'column', gap: '8px', minWidth: 0, flexShrink: 0, borderTop: TOKEN_BORDER, paddingTop: '10px' } },
+          h('textarea', { value: question, name: 'chat-actions-side-question', autoComplete: 'off', rows: 3,
+            'aria-label': formatT(t, 'ask.questionPlaceholder'), placeholder: formatT(t, 'ask.questionPlaceholder'),
+            onChange: (event) => setQuestion(event.target.value),
+            onKeyDown: (event) => {
+              if (event.isComposing || event.nativeEvent?.isComposing) return;
+              if (event.key === 'Escape' && state.busy) {
+                event.preventDefault(); event.stopPropagation(); return controller.stop();
+              }
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault(); if (!state.busy && !state.stopping && !state.selecting) return send();
+              }
+            },
+            style: { ...controlStyle, minHeight: '62px', maxHeight: '160px', padding: '8px', resize: 'vertical' }
+          }),
+          h('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'end', gap: '8px', minWidth: 0 } },
+            h('label', { style: { flex: '1 1 160px', minWidth: 0, color: TOKEN_MUTED } },
+              h('span', { style: { display: 'block', marginBottom: '4px' } }, formatT(t, 'ask.model')),
+              h('select', { name: 'chat-actions-side-model', value: selectedKey, disabled: locked || !choices.length, style: controlStyle,
+                onChange: (event) => {
+                  const next = choices.find((item) => item.key === event.target.value);
+                  if (next) return controller.selectModel({ provider: next.group.id, model: next.model.id,
+                    ...(next.model.reasoning?.defaultEffort ? { reasoningEffort: next.model.reasoning.defaultEffort } : {}) });
+                }
+              },
+                h('option', { value: '', disabled: !!selection }, formatT(t, catalog.status === 'loading' && !choices.length ? 'ask.modelsLoading' : 'ask.inheritModel')),
+                selection && !choice ? h('option', { value: selectedKey, disabled: true }, selection.model) : null,
+                (catalog.groups || []).map((group) => h('optgroup', { key: group.id, label: group.name || group.id },
+                  group.models.map((model) => h('option', { key: model.id, value: JSON.stringify([group.id, model.id]) }, model.name || model.id)))))),
+            reasoning?.efforts?.length ? h('label', { style: { flex: '0 1 120px', minWidth: 0, color: TOKEN_MUTED } },
+              h('span', { style: { display: 'block', marginBottom: '4px' } }, formatT(t, 'ask.effort')),
+              h('select', { name: 'chat-actions-side-effort', value: selection.reasoningEffort ?? reasoning.defaultEffort ?? '', disabled: locked, style: controlStyle,
+                onChange: (event) => controller.selectModel({ provider: selection.provider, model: selection.model,
+                  ...(event.target.value ? { reasoningEffort: event.target.value } : {}) })
+              },
+                !reasoning.defaultEffort ? h('option', { value: '' }, formatT(t, 'ask.defaultEffort')) : null,
+                reasoning.efforts.map((effort) => h('option', { key: effort.id, value: effort.id }, effort.name || effort.id)))) : null),
+          modelIssue || (!choices.length && catalog.status === 'ready') ? h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', color: TOKEN_MUTED } },
+            h('span', { style: { minWidth: 0, overflowWrap: 'anywhere' } }, String(modelIssue || formatT(t, 'ask.modelsUnavailable'))),
+            h('button', { type: 'button', onClick: reloadModels, style: buttonStyle }, formatT(t, 'ask.reloadModels'))) : null,
+          h('div', { style: { color: TOKEN_MUTED, fontSize: '11px' } }, formatT(t, 'ask.nextModel')),
+          h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' } },
+            h('button', { type: 'button', disabled: state.stopping || (state.selecting && !state.busy), onClick: state.busy ? () => controller.stop() : send,
+              title: formatT(t, state.busy ? 'ask.stopHint' : 'ask.send'), style: { ...buttonStyle, fontWeight: 600 },
+              'aria-busy': state.stopping
+            }, formatT(t, state.stopping ? 'ask.stopping' : state.busy ? 'ask.stop' : 'ask.send')),
+            h('button', { type: 'button', disabled: state.busy || state.stopping || !state.messages.some((message) => message.role === 'assistant' && message.text),
+              onClick: add, style: buttonStyle }, formatT(t, 'tools.addToComposer')),
+            h('button', { type: 'button', disabled: state.busy || state.stopping || state.selecting, onClick: async () => {
+              try { await controller.close(); owner.current.context = null; owner.current.discussionId = newRequestId(); setNotice(''); }
+              catch (error) { setNotice(String(error?.message || error)); }
+            }, style: buttonStyle }, formatT(t, 'ask.new'))),
+          h('div', { role: 'status', 'aria-live': 'polite', style: { minHeight: '18px', overflowWrap: 'anywhere',
+            color: state.error ? 'var(--dsw-alias-label-error, #d9534f)' : TOKEN_MUTED } },
+            state.error || notice || (state.stopping ? formatT(t, 'ask.stopping') : state.selecting ? formatT(t, 'ask.modelChanging') : state.busy ? formatT(t, 'ask.generating') : ''))
+        )
       );
     }
 
@@ -2018,6 +2186,7 @@ window.__ModuleLoader__.load({
           };
           return {
             create: (request, signal) => unwrap(rpc.create(request, signal)),
+            selectModel: (request, signal) => unwrap(rpc.selectModel(request, signal)),
             stream: (request, signal) => rpc.stream(request, signal),
             cancel: (request) => unwrap(rpc.cancel(request)),
             close: (request) => unwrap(rpc.close(request))
@@ -2335,6 +2504,7 @@ window.__ModuleLoader__.load({
         inject: (sessionId) => ({
           sideChatRemote,
           contextFor,
+          modelDirectory: (parentId) => getService('modelDirectories')?.directoryFor(parentId || sessionId),
           insertDiscussion,
           sessionId
         })

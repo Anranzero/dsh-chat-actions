@@ -6,7 +6,7 @@ import { SIDE_CHAT_INVOCATIONS } from '../side-chat/typert.js';
 
 const source = readFileSync(new URL('../client.js', import.meta.url), 'utf8');
 
-function setup({ rows = [], running = false, prompt, create, ready, input, events = [], fork, chat } = {}) {
+function setup({ rows = [], running = false, prompt, create, ready, input, events = [], fork, chat, directory, rpc } = {}) {
   let definition;
   let codec;
   const slots = new Map();
@@ -46,6 +46,11 @@ function setup({ rows = [], running = false, prompt, create, ready, input, event
     openSession: (id) => { calls.push(['openSession', id]); },
     archiveSession: async (id, options) => { calls.push(['archiveSession', id, options]); }
   } };
+  if (directory) services.modelDirectories = { directoryFor: () => directory };
+  if (rpc) {
+    services.remote = { $mount: async () => async () => {} };
+    services['remote.chatActionsSideChat'] = rpc;
+  }
   const ctx = {
     get: (name) => services[name],
     effect: (fn) => { const off = fn(); if (typeof off === 'function') effects.push(off); return off; },
@@ -393,4 +398,157 @@ test('stop aborts the stream and preserves the partial reply', async () => {
   assert.equal(state.error, '');
   await controller.close();
   app.dispose();
+});
+
+test('stop unlocks a stalled stream and late chunks cannot overwrite the next reply', async () => {
+  const app = setup();
+  let unblock, reached;
+  const stalled = new Promise((resolve) => { unblock = resolve; });
+  const ready = new Promise((resolve) => { reached = resolve; });
+  let state;
+  const controller = app.plugin.sideChatActions.createController(async () => ({
+    create: async () => ({ chatId: 'discussion' }),
+    stream: async function* (request) {
+      yield { type: 'started', requestId: request.requestId };
+      yield { type: 'content', text: request.text, reasoning: '' };
+      if (request.text === 'first') { reached(); await stalled; }
+      yield { type: 'content', text: 'late ' + request.text, reasoning: '' };
+      yield { type: 'finished', status: 'complete' };
+    }, cancel: async () => {}, close: async () => {}
+  }), (value) => { state = value; });
+  const first = controller.send({ atSeq: 4 }, 'first');
+  try {
+    await ready;
+    await controller.stop();
+    assert.equal(state.busy, false, 'stopping must not wait for another chunk');
+    assert.equal(state.messages[1].status, 'stopped');
+    assert.equal(state.messages[1].text, 'first');
+    await controller.send({ atSeq: 4 }, 'second');
+    assert.equal(state.messages.at(-1).text, 'late second');
+    unblock();
+    await first;
+    assert.equal(state.messages[1].text, 'first');
+    assert.equal(state.messages.at(-1).text, 'late second');
+  } finally { unblock(); await first; await controller.close(); app.dispose(); }
+});
+
+test('model selection goes through the real plugin adapter and stays separate from the parent', async () => {
+  const selected = [];
+  let rejectSelection = false;
+  const app = setup({ rpc: {
+    selectModel: async ({ chatId, ...selection }) => {
+      selected.push({ chatId, ...selection });
+      return { ok: true, value: rejectSelection ? { ok: false, error: { message: 'model unavailable' } }
+        : { ok: true, value: { selected: selection } } };
+    }
+  } });
+  const remote = await app.slots.get('dsh-chat-actions/ask').inject('main').sideChatRemote();
+  assert.equal(typeof remote.selectModel, 'function');
+  let created;
+  const controller = app.plugin.sideChatActions.createController(async () => ({ ...remote,
+    create: async (request) => { created = request; return { chatId: 'discussion', modelSelection: request.modelSelection }; },
+    stream: async function* (request) {
+      yield { type: 'started', requestId: request.requestId };
+      yield { type: 'finished', status: 'complete' };
+    }, close: async () => {}
+  }), () => {});
+  assert.equal(await controller.selectModel({ provider: 'two', model: 'B', reasoningEffort: 'high' }), true);
+  await controller.send({ parentSessionId: 'main', atSeq: 4 }, 'question');
+  assert.equal(created.modelSelection.model, 'B');
+  await controller.selectModel({ provider: 'one', model: 'A', reasoningEffort: 'low' });
+  assert.equal(selected[0].chatId, 'discussion');
+  assert.equal(selected[0].reasoningEffort, 'low');
+  assert.equal(controller.getSnapshot().modelSelection.model, 'A');
+  rejectSelection = true;
+  assert.equal(await controller.selectModel({ provider: 'two', model: 'B' }), false);
+  assert.equal(controller.getSnapshot().modelSelection.model, 'A');
+  assert.equal(controller.getSnapshot().error, 'model unavailable');
+  assert.equal(app.calls.some((call) => ['prompt', 'create', 'fork', 'openSession'].includes(call[0])), false);
+  await controller.close(); app.dispose();
+});
+
+test('a late model operation cannot change a newly opened side chat', async () => {
+  const app = setup();
+  let factoryCalls = 0, chats = 0, release;
+  const waiting = new Promise((resolve) => { release = resolve; });
+  const switches = [];
+  const bridge = {
+    create: async (request) => ({ chatId: 'chat-' + ++chats, modelSelection: request.modelSelection }),
+    stream: async function* (request) { yield { type: 'started', requestId: request.requestId }; yield { type: 'finished', status: 'complete' }; },
+    selectModel: async (request) => { switches.push(request); return { selected: request }; },
+    close: async () => {}
+  };
+  const controller = app.plugin.sideChatActions.createController(async () => {
+    if (++factoryCalls === 2) await waiting;
+    return bridge;
+  }, () => {});
+  await controller.send({ atSeq: 4 }, 'first');
+  const selecting = controller.selectModel({ provider: 'provider', model: 'stale' });
+  await controller.close();
+  await controller.selectModel({ provider: 'provider', model: 'new' });
+  await controller.send({ atSeq: 4 }, 'second');
+  release();
+  await selecting;
+  assert.equal(switches.length, 0, 'an obsolete selection must not be sent to the new chat');
+  assert.equal(controller.getSnapshot().modelSelection.model, 'new');
+  await controller.close(); app.dispose();
+});
+
+test('the sidebar model controls use the catalog without selecting the parent model, and Escape stops generation', async () => {
+  let parentChanges = 0, modelLoads = 0, cancelled = 0, request, reached, finishSelection;
+  const ready = new Promise((resolve) => { reached = resolve; });
+  const directory = {
+    store: { getSnapshot: () => ({ status: 'ready', groups: [{ id: 'provider', name: 'Provider', models: [
+      { id: 'model', name: 'Model', reasoning: { defaultEffort: 'low', efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }] } }
+    ] }], current: { provider: 'parent', model: 'unchanged' } }), subscribe: () => () => {} },
+    load: async () => { ++modelLoads; },
+    select: async () => { ++parentChanges; }
+  };
+  const app = setup({ directory, rpc: {
+    create: async (value) => { request = value; return { ok: true, value: { ok: true, value: { chatId: 'discussion', modelSelection: value.modelSelection } } }; },
+    stream: async function* (value, signal) {
+      yield { type: 'started', requestId: value.requestId };
+      yield { type: 'content', text: 'partial', reasoning: '' };
+      reached();
+      await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
+    },
+    selectModel: async ({ chatId, ...selection }) => {
+      await new Promise((resolve) => { finishSelection = resolve; });
+      return { ok: true, value: { ok: true, value: { selected: selection } } };
+    },
+    cancel: async () => { ++cancelled; return { ok: true, value: { ok: true, value: { cancelled: true } } }; },
+    close: async () => ({ ok: true, value: { ok: true, value: { closed: true } } })
+  } });
+  const props = askPanelProps(app);
+  let sending, changing;
+  try {
+    app.renderAsk(props);
+    let view = app.renderAsk(props);
+    const model = find(view, (node) => node.type === 'select' && node.props.name === 'chat-actions-side-model');
+    assert.ok(model, 'the sidebar needs an actual model control');
+    await model.props.onChange({ target: { value: JSON.stringify(['provider', 'model']) } });
+    view = app.renderAsk(props);
+    await find(view, (node) => node.type === 'select' && node.props.name === 'chat-actions-side-effort').props.onChange({ target: { value: 'high' } });
+    view = app.renderAsk(props);
+    sending = find(view, (node) => node.type === 'button' && node.children.includes('ask.send')).props.onClick();
+    await ready;
+    view = app.renderAsk(props);
+    changing = find(view, (node) => node.type === 'select' && node.props.name === 'chat-actions-side-effort').props.onChange({ target: { value: 'low' } });
+    await new Promise(setImmediate);
+    view = app.renderAsk(props);
+    assert.equal(find(view, (node) => node.type === 'button' && node.children.includes('ask.stop')).props.disabled, false);
+    const textarea = find(view, (node) => node.type === 'textarea');
+    textarea.props.onChange({ target: { value: 'keep this draft' } });
+    await textarea.props.onKeyDown({ key: 'Escape', preventDefault() {}, stopPropagation() {} });
+    await sending;
+    finishSelection();
+    await changing;
+    view = app.renderAsk(props);
+    assert.equal(find(view, (node) => node.type === 'textarea').props.value, 'keep this draft');
+    assert.ok(find(view, (node) => node.children?.includes('ask.stopped')));
+    assert.equal(request.modelSelection.reasoningEffort, 'high');
+    assert.equal(cancelled, 1);
+    assert.equal(parentChanges, 0);
+    assert.equal(modelLoads, 1);
+  } finally { finishSelection?.(); app.unmountAsk(); await changing; await sending; app.dispose(); }
 });

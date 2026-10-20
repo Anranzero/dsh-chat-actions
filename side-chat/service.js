@@ -10,6 +10,32 @@ function error(code, message, recoverable = false) {
 }
 function failure(value) { return { ok: false, error: value }; }
 function messageOf(value) { return value instanceof Error ? value.message : String(value); }
+function untilAborted(operation, signal) {
+    signal.throwIfAborted();
+    return new Promise((resolve, reject) => {
+        const abort = () => reject(signal.reason);
+        signal.addEventListener('abort', abort, { once: true });
+        Promise.resolve().then(() => { signal.throwIfAborted(); return operation(); })
+            .then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+    });
+}
+async function* cancellableChunks(source, signal) {
+    const iterator = source[Symbol.asyncIterator]();
+    try {
+        while (true) {
+            const next = await untilAborted(() => iterator.next(), signal);
+            if (next.done) return;
+            yield next.value;
+        }
+    }
+    finally {
+        // Some providers keep a pending read after abort. Request cleanup without
+        // making cancellation, the next turn, or plugin unload wait for that read.
+        const returned = iterator.return?.();
+        if (signal.aborted) void Promise.resolve(returned).catch(() => {});
+        else await returned;
+    }
+}
 function textContent(content) {
     return content.flatMap(block => {
         if (block.type === 'text')
@@ -189,16 +215,16 @@ export class ReadOnlySideChatService {
         };
         try {
             yield { type: 'started', requestId: request.requestId, modelSelection: turn.model };
-            const prepared = await this.ctx.llm.prepareCall({
+            const prepared = await untilAborted(() => this.ctx.llm.prepareCall({
                 provider: turn.model.provider, model: turn.model.model,
                 ...(turn.model.reasoningEffort === undefined ? {} : { reasoningEffort: ReasoningEffortId(turn.model.reasoningEffort) }),
-            }, combined);
+            }, combined), combined);
             let terminal = false;
             let lastPublished = 0;
-            for await (const chunk of prepared.stream({
+            for await (const chunk of cancellableChunks(prepared.stream({
                 ...prepared.config, system: SYSTEM, tools: [], signal: combined,
                 messages: [{ role: 'user', content: [{ type: 'text', text: `Read-only parent reference:\n${chat.context}` }] }, ...chat.history],
-            })) {
+            }), combined)) {
                 combined.throwIfAborted();
                 if (chunk.type === 'tool-call-delta' || (chunk.type === 'block-end' && chunk.block.type === 'tool-call')) {
                     throw new Error('This Side Chat is read-only; tool calls cannot be executed.');
@@ -310,9 +336,9 @@ export class ReadOnlySideChatService {
     missing() { return error('side_chat_not_found', 'This temporary Side Chat has expired or closed. Open a new one.'); }
     async resolveModel(model, signal) {
         const { ReasoningEffortId } = this.runtime;
-        const { config } = await this.ctx.llm.prepareCall({ provider: model.provider, model: model.model,
+        const { config } = await untilAborted(() => this.ctx.llm.prepareCall({ provider: model.provider, model: model.model,
             ...(model.reasoningEffort === undefined ? {} : { reasoningEffort: ReasoningEffortId(model.reasoningEffort) }),
-        }, signal);
+        }, signal), signal);
         return { provider: config.provider, model: config.model,
             ...(config.reasoningEffort === undefined ? {} : { reasoningEffort: String(config.reasoningEffort) }) };
     }

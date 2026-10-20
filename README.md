@@ -11,7 +11,7 @@ DeepSeek Harness（DSH）Web 客户端插件，给对话界面补充以下实用
 | 功能 | 说明 |
 |---|---|
 | **引用选中内容** | 在对话里选中文字，浮出「添加到对话 / 在侧边栏提问」；引用以 DSH 原生 chip 插入输入框，数量入口打开浮层预览，可回到原消息重新圈选或删除，发送时由 codec 展开全文给模型 |
-| **侧边栏提问** | 参考 dsh-side-chat 的只读流式讨论；冻结所选消息所在已完成轮次的上下文，继承原模型，支持停止和引用回主输入框，不创建 Session |
+| **侧边栏提问** | 参考 dsh-side-chat 的只读流式讨论；冻结已完成轮次的上下文，默认继承原模型，可独立选择模型/推理等级，支持停止和引用回主输入框，不创建 Session |
 | **暂停后发送排队消息** | 对话停止后，排队中的消息仍可逐条发送（含图片/文件附件） |
 | **编辑自己发的消息** | 悬停自己发送的消息，复制按钮右侧出现铅笔；改完从这条消息之前继续，原消息及其后的回复离开当前会话 |
 | **记住模型推理等级** | 按服务商和模型保存选择成功的档位；A、B 来回切换时恢复各自的等级，目标模型不再支持的等级自动交回宿主默认处理 |
@@ -65,6 +65,8 @@ dsh plugin --profile desktop add github:Anranzero/dsh-chat-actions
 
 - **引用**：鼠标划选对话内容 → 点「添加到对话」；点击输入框区域的「几条引用」打开浮层预览。点「重新选择原文」定位来源消息，重新圈选后保存，或取消保留旧引用；也可删除引用。引用不提供自由改写文本框，发送时保留所选全文、换行和代码缩进。
 - **侧边栏提问**：在已完成的回复中划选 → 点「在侧边栏提问」→ 输入问题并发送；侧栏流式显示回答和可折叠思考内容。「停止生成」保留已收到的文字；「添加到对话」把讨论作为引用放回主输入框，尚不发送，重复添加会更新同一引用。再次划选会添加到侧聊草稿；「新侧聊」清理当前讨论后重新读取上下文。
+- **侧聊模型**：输入框下方可选择 DSH 已配置的提供方/模型和该模型支持的推理等级；只影响侧聊。生成时切换用于下一次回复，当前回复仍使用开始时的模型；加载失败可重新加载，也可继续继承原对话模型。
+- **停止侧聊**：生成时发送按钮变为「停止生成」，也可在输入框内按 Esc。停止保留已收到的回答和未发送草稿；旧请求迟到的数据不会继续追加。随后可发送新问题继续讨论。
 - **编辑消息**：悬停你自己发的消息 → 点复制图标右侧的铅笔 → 改完发送，当前会话从这条消息之前继续
 - **排队发送**：让 Agent 跑起来时输入消息（进入排队）→ 停止对话 → 在输入框上方那条队列里点「发送 ↓」或行尾「↑」
 - **排队图片**：排队行直接显示缩略图，点一下开全屏预览（点背景或按 Esc 关闭）
@@ -82,7 +84,9 @@ dsh plugin --profile desktop add github:Anranzero/dsh-chat-actions
 ### 本地源码修复与验证
 
 - 侧聊已移除 `SessionProvider` 和原生 Agent 会话路径；前端直接消费插件自己的流式协议，避开 `conversation-renderer-unavailable`。问题被宿主接收后才清空对应草稿；断线保留部分回答，接收前重试沿用请求 ID。
-- `side-chat/service.js` 与生成的严格协议复用 [AHGGG/dsh-side-chat](https://github.com/AHGGG/dsh-side-chat/tree/8d463ea7410bcb0b4e76a2d11d5b848d04fc0086) 的 MIT 实现，保留授权声明；只调整插件命名空间、运行时注入和现有引用入口，不修改 DSH 本体。
+- `side-chat/service.js` 与生成的严格协议复用 [AHGGG/dsh-side-chat](https://github.com/AHGGG/dsh-side-chat/tree/8d463ea7410bcb0b4e76a2d11d5b848d04fc0086) 的 MIT 实现，保留授权声明；适配插件命名空间、运行时注入和现有引用入口，并补上模型控制与取消等待保护，不修改 DSH 本体。
+- 停止通过 AbortSignal 中断宿主等待并请求模型流清理；不再依赖提供方主动返回下一段文字。回归覆盖提供方忽略取消、模型切换失败、切换中停止，以及旧操作不会串入新侧聊。
+- 侧聊输入区固定在底部，代码和表格在各自区域横向滚动；向上阅读历史时，新输出不再强制滚回底部。
 - 引用 codec 随 `inputTriggers` 服务就绪、替换和卸载注册/清理，不再只在启动时查一次。注册成功前不会插入无法发送的引用 chip；完整引用文本不降级为摘要。
 - 排队栏复用输入框的最大宽度与两侧留白，居中对齐，不使用固定屏宽。
 - `npm test` 运行服务生命周期、引用全文和排队栏布局约束的回归检查；布局约束检查不代替真实页面的视觉验证。
@@ -129,7 +133,7 @@ A DeepSeek Harness (DSH) Web client plugin that adds four practical actions to t
 | Feature | Description |
 |---|---|
 | **Quote selection** | Select text and pick "Add to chat" / "Ask in sidebar". Native reference chips retain the full text. A quote-count button opens read-only previews with source reselection and removal; reselection is restricted to the original message |
-| **Sidebar question** | Read-only streaming discussion with a frozen parent turn, inherited model, stop, and add-to-composer controls; creates no Session |
+| **Sidebar question** | Read-only streaming discussion with a frozen parent turn, independent model/effort selection, stop, and add-to-composer controls; creates no Session |
 | **Send queued messages while paused** | After the agent stops, queued messages can still be sent one by one, attachments included |
 | **Edit your own sent messages** | Hover a message you sent; a pencil appears next to Copy. Edit and send, and the current session continues from before that message |
 
@@ -180,6 +184,8 @@ honours the `DSH_HOME` environment variable.
 
 - **Quote**: select conversation text → "Add to chat"
 - **Ask**: select a completed reply → "Ask in sidebar" → send. Stop preserves partial replies. "Add to chat" inserts or updates a reference in the parent composer without sending. Close or "New discussion" disposes the temporary discussion.
+- **Side Chat model**: select a configured model and supported reasoning effort below the input. Choices affect Side Chat only and apply to the next reply. The parent model remains the default until an explicit choice.
+- **Stop**: click the active Stop button or press Escape in the input. Partial replies and unsent drafts remain available; late chunks are discarded. Model changes in progress do not disable Stop.
 - **Edit**: hover your own message → pencil next to the copy icon
 - **Queue**: type while the agent runs (message is queued) → stop the agent → click "Send ↓" in the queue strip above the composer, or the "↑" at a row's end
 - **Queued images**: rows show thumbnails; click one for a full-size preview (click the backdrop or press Escape to close)

@@ -79,3 +79,53 @@ test('invalid and unfinished context boundaries are rejected', () => {
   assert.equal(completedContextBoundary([{ seq: 1, type: 'assistant/message' }], 1), undefined);
   assert.equal(completedContextBoundary([{ seq: 2, type: 'turn/end' }], 1), undefined);
 });
+
+test('cancel completes even when the provider ignores the signal and stalls its next chunk', async (t) => {
+  let unblock, reached, count = 0;
+  const stalled = new Promise((resolve) => { unblock = resolve; });
+  const ready = new Promise((resolve) => { reached = resolve; });
+  const app = setup(async function* () {
+    yield { type: 'text', text: 'partial' };
+    if (++count === 1) { reached(); await stalled; }
+    yield { type: 'finish', finish: { kind: 'stop' } };
+  });
+  t.after(() => app.service.dispose());
+  const { value } = await app.create();
+  const first = Array.fromAsync(app.service.stream({ chatId: value.chatId, requestId: 'first', text: 'question' }, 'owner', new AbortController().signal));
+  await ready;
+  let cancelled = false;
+  const stopping = app.service.cancel({ chatId: value.chatId }, 'owner').then(() => { cancelled = true; });
+  try {
+    await new Promise(setImmediate);
+    assert.equal(cancelled, true, 'cancellation cannot depend on a cooperative provider');
+    assert.equal((await first).at(-1).status, 'stopped');
+    const next = await Array.fromAsync(app.service.stream({ chatId: value.chatId, requestId: 'second', text: 'continue' }, 'owner', new AbortController().signal));
+    assert.equal(next.at(-1).status, 'complete');
+  } finally { unblock(); await first; await stopping; }
+});
+
+test('changing the side-chat model during generation applies only to the next provider call', async (t) => {
+  let reached, count = 0;
+  const ready = new Promise((resolve) => { reached = resolve; });
+  const models = [];
+  const app = setup(async function* (request) {
+    models.push(request.model);
+    yield { type: 'text', text: 'reply' };
+    if (++count === 1) {
+      reached();
+      await new Promise((resolve) => request.signal.addEventListener('abort', resolve, { once: true }));
+    }
+    yield { type: 'finish', finish: { kind: 'stop' } };
+  });
+  t.after(() => app.service.dispose());
+  const { value } = await app.create();
+  const first = Array.fromAsync(app.service.stream({ chatId: value.chatId, requestId: 'first', text: 'question' }, 'owner', new AbortController().signal));
+  await ready;
+  const selected = await app.service.selectModel({ chatId: value.chatId, provider: 'other', model: 'alternate', reasoningEffort: 'high' }, 'owner', new AbortController().signal);
+  assert.equal(selected.ok, true);
+  assert.equal(app.service.chats.get(value.chatId).turns.get('first').model.model, 'inherited');
+  await app.service.cancel({ chatId: value.chatId }, 'owner');
+  await first;
+  await Array.fromAsync(app.service.stream({ chatId: value.chatId, requestId: 'second', text: 'follow up' }, 'owner', new AbortController().signal));
+  assert.deepEqual(models, ['inherited', 'alternate']);
+});
