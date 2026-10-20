@@ -28,6 +28,17 @@ if (-not (Test-Path (Join-Path $profileDir 'package.json'))) {
     exit 1
 }
 
+if ($FromClone) {
+    Write-Host 'Installing host SDK peers in the linked working copy...'
+    Push-Location $PSScriptRoot
+    try {
+        & npm install --ignore-scripts --no-package-lock --no-audit --no-fund
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    } finally {
+        Pop-Location
+    }
+}
+
 Write-Host "DSH home : $DshHome"
 Write-Host "Profile  : $Profile"
 Write-Host "Spec     : $Spec"

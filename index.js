@@ -1,16 +1,15 @@
 /**
  * Host half of dsh-chat-actions.
  *
- * The feature set lives in the browser half. This half only does one optional
- * job: publish a changed client bundle to an already-open page through the
- * host's client-module registry, so a local edit does not require a restart.
+ * Owns the read-only side-chat model transport and optional client hot reload.
  *
  * `clientModules` is injected OPTIONALLY: hosts without that service (older
- * builds) simply skip live updates and keep every UI feature working.
+ * builds) simply skip live client updates.
  */
 const PACKAGE = 'dsh-chat-actions';
 
 export function apply(ctx) {
+  ctx.plugin(ChatActionsSideChat);
   ctx.inject(['clientModules'], (scope) => {
     const clientModules = scope.clientModules;
     if (!clientModules || typeof clientModules.rebuilt !== 'function') return;
@@ -66,6 +65,7 @@ export function apply(ctx) {
 
 import { statSync, readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import ChatActionsSideChat from './side-chat/host.js';
 
 const clientUrl = new URL('./client.js', import.meta.url);
 const statusUrl = new URL('./hot-reload-status.json', import.meta.url);
