@@ -35,6 +35,11 @@ if [ ! -f "$PROFILE_DIR/package.json" ]; then
     exit 1
 fi
 
+if [ "$FROM_CLONE" = 1 ]; then
+    echo "Installing host SDK peers in the linked working copy..."
+    ( cd "$HERE" && npm install --ignore-scripts --no-package-lock --no-audit --no-fund )
+fi
+
 echo "DSH home : $DSH_HOME_DIR"
 echo "Profile  : $PROFILE"
 echo "Spec     : $SPEC"

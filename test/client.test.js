@@ -63,6 +63,7 @@ function setup(initialTriggers, { hostConversationFirst = false } = {}) {
   };
   vm.runInNewContext(source, { window, console: { info() {}, warn() {} } });
   const plugin = definition.factory((name) => {
+    if (name === '@deepseek-ai/dsh-client-ui-primitives') return { MarkdownText: 'markdown' };
     assert.equal(name, 'react');
     return { createElement() { throw new Error('Rendering is outside this test'); } };
   });
