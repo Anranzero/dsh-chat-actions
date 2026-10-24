@@ -160,6 +160,8 @@ test('queue items are rounded cards above the composer with no numbered header',
   assert.equal(panel(tree).props.style.background, undefined);
   assert.equal(panel(tree).props.style.border, undefined);
   assert.equal(panel(tree).props.style.padding, undefined);
+  // It cancels the composer stack gap so the last card touches the input.
+  assert.match(panel(tree).props.style.marginBottom, /--dsh-composer-stack-gap/);
   // Running and unfocused draws no header/count line, and rows carry no number.
   assert.equal(contents(tree).includes('queue.count'), false);
   assert.equal(contents(tree).includes('queue.shortcuts'), false);

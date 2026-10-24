@@ -1559,7 +1559,11 @@ window.__ModuleLoader__.load({
             width: 'calc(100% - var(--dsh-composer-side-clearance, 0px) - var(--dsh-composer-side-clearance, 0px))',
             maxWidth: 'var(--dsh-composer-card-max-width, 100%)', marginInline: 'auto',
             display: 'flex', flexDirection: 'column', gap: '5px',
-            marginBottom: '6px', font: FONT, color: TOKEN_TEXT
+            // The composer stack owns a 6px gap between docks and the input.
+            // Cancel it (and overlap the input by the same 3px the shipped dock
+            // uses) so the last rounded card visually touches the composer.
+            marginBottom: 'calc(0px - var(--dsh-composer-stack-gap, 6px) - 3px)',
+            font: FONT, color: TOKEN_TEXT
           }
         },
           h('style', null, QUEUE_CSS),
