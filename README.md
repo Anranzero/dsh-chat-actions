@@ -70,11 +70,11 @@ dsh plugin --profile desktop add github:Anranzero/dsh-chat-actions
 - **侧聊模型**：输入框下方可选择 DSH 已配置的提供方/模型和该模型支持的推理等级；只影响侧聊。生成时切换用于下一次回复，当前回复仍使用开始时的模型；加载失败可重新加载，也可继续继承原对话模型。
 - **停止侧聊**：生成时发送按钮变为「停止生成」，也可在输入框内按 Esc。停止保留已收到的回答和未发送草稿；旧请求迟到的数据不会继续追加。随后可发送新问题继续讨论。
 - **编辑消息**：悬停你自己发的消息 → 点复制图标右侧的铅笔 → 改完发送，当前会话从这条消息之前继续
-- **排队面板**：输入框上方显示排队消息，默认展开；每条一行（编号、正文、附件），点正文可展开全文，行尾是三个同款图标按钮：插话/发送、编辑、删除（tooltip 标注动作和快捷键）。
+- **排队面板**：输入框上方以圆角卡片堆叠显示排队消息（正文截断、点正文展开全文，附件显示缩略图/文件名）；每张卡片行尾是三个同款图标按钮：插话/发送、编辑、删除（tooltip 标注动作和快捷键）。运行中不显示额外标题，暂停或键盘聚焦时只在卡片上方出现一行提示。
 - **自动发送 / 立即插话**：普通排队消息在本轮任务结束后按顺序发送（含图片和文件附件）。Agent 运行中，行尾箭头把**该条消息**加入当前任务的下一步骤，不要求队首，也**不会中断正在执行的模型请求或工具**；暂停后只允许队首发「发送下一条」，其余仍按 FIFO 保留。
 - **编辑排队消息**：纯文本消息在队列内编辑，不覆盖主输入框草稿；Enter 换行，Ctrl/⌘ + Enter 保存，Esc 取消。原消息已被发送或移除时，未保存的修改仍保留在编辑区，可复制后关闭，不会擅自重发。
 - **删除排队消息**：删除即时生效、没有撤销；RPC 成功但队列投影未更新前该行保持锁定，避免重复提交。
-- **键盘快捷键**：Tab 到队列面板（或点击面板空白处）让它自己持有焦点，标题栏会切换成快捷键提示；此时 `↑`/`↓`（`Home`/`End`）选择消息，`Enter` 发送或插话，`E` 编辑，`Del` 删除，`Esc` 退出。焦点在行内按钮上时保留按钮自己的 Enter/Space，行尾按钮 tooltip 也标出对应按键；`Ctrl/⌘/Alt` 组合键和按键长按不会触发队列操作。
+- **键盘快捷键**：Tab 到队列面板（或点击面板空白处）让它自己持有焦点，卡片上方会出现快捷键提示；此时 `↑`/`↓`（`Home`/`End`）选择消息，`Enter` 发送或插话，`E` 编辑，`Del` 删除，`Esc` 退出。焦点在行内按钮上时保留按钮自己的 Enter/Space，行尾按钮 tooltip 也标出对应按键；`Ctrl/⌘/Alt` 组合键和按键长按不会触发队列操作。
 - **排队图片**：排队行直接显示缩略图，点一下开全屏预览（点背景或按 Esc 关闭）；超过三个的附件可展开查看。
 
 ### 实现要点
@@ -94,7 +94,7 @@ dsh plugin --profile desktop add github:Anranzero/dsh-chat-actions
 - 停止通过 AbortSignal 中断宿主等待并请求模型流清理；不再依赖提供方主动返回下一段文字。回归覆盖提供方忽略取消、模型切换失败、切换中停止，以及旧操作不会串入新侧聊。
 - 侧聊输入区固定在底部，代码和表格在各自区域横向滚动；向上阅读历史时，新输出不再强制滚回底部。
 - 引用 codec 随 `inputTriggers` 服务就绪、替换和卸载注册/清理，不再只在启动时查一次。注册成功前不会插入无法发送的引用 chip；完整引用文本不降级为摘要。
-- 排队栏复用输入框的最大宽度与两侧留白，居中对齐，不使用固定屏宽；默认展开列表，键盘操作只在面板自身聚焦时生效，避免与输入框的 Enter/Delete 冲突。
+- 排队栏复用输入框的最大宽度与两侧留白，居中对齐，不使用固定屏宽；圆角卡片直接堆叠在输入框上方，键盘操作只在面板自身聚焦时生效，避免与输入框的 Enter/Delete 冲突。
 - `npm test` 运行服务生命周期、引用全文、队列编辑/删除/插话和键盘快捷键的回归检查；这些检查不代替真实页面的视觉验证。
 - 宿主入口检查直接导入 `index.js`，并在真实 Cordis 容器中检查侧聊服务的注册与卸载，覆盖缺少宿主 SDK 依赖导致整个插件无法启用的问题；不发送模型请求。
 - 本地修复请从这个源码目录安装，保留工作副本；重新安装 GitHub 版本不会自动包含尚未提交到上游的本地改动。
@@ -195,11 +195,11 @@ honours the `DSH_HOME` environment variable.
 - **Side Chat model**: select a configured model and supported reasoning effort below the input. Choices affect Side Chat only and apply to the next reply. The parent model remains the default until an explicit choice.
 - **Stop**: click the active Stop button or press Escape in the input. Partial replies and unsent drafts remain available; late chunks are discarded. Model changes in progress do not disable Stop.
 - **Edit**: hover your own message → pencil next to the copy icon
-- **Queue**: a queue manager above the composer, expanded by default; each row shows its number, text and attachments, the text expands in place, and the row ends with three matching icon buttons — send/steer, edit and remove — whose tooltips name the action and its key.
+- **Queue**: rounded cards stack directly above the composer; each card shows the message (truncated, click to expand) and attachments, with three matching icon buttons at its end — send/steer, edit and remove — whose tooltips name the action and its key. Running turns show no extra header; a one-line hint appears only while paused or when the strip owns keyboard focus.
 - **Automatic send / steer**: queued messages submit in FIFO order once the current turn ends, attachments included. While the agent runs, a row's arrow steers **that item** into the next step without cancelling the active model request or tool; while paused only the FIFO head can be sent.
 - **Queue edit**: pure-text rows edit in place without touching the composer draft. Enter inserts a newline, Ctrl/⌘ + Enter saves, Esc cancels. If the row leaves the queue, unsaved changes stay available to copy and are never resent automatically.
 - **Queue removal**: removal is immediate and has no undo; a row stays locked after the RPC until the queue projection confirms it.
-- **Queue shortcuts**: Tab onto the strip (or click its blank area) so the strip itself owns focus; its header then shows the shortcut hint. `↑`/`↓` (`Home`/`End`) select a row, `Enter` sends or steers, `E` edits, `Del` removes, `Esc` leaves. When focus sits on an inner button that button keeps its native Enter/Space, and button tooltips name the key. Modifier chords and held keys never trigger queue actions.
+- **Queue shortcuts**: Tab onto the strip (or click its blank area) so the strip itself owns focus; a one-line shortcut hint then appears above the cards. `↑`/`↓` (`Home`/`End`) select a row, `Enter` sends or steers, `E` edits, `Del` removes, `Esc` leaves. When focus sits on an inner button that button keeps its native Enter/Space, and button tooltips name the key. Modifier chords and held keys never trigger queue actions.
 - **Queued images**: rows show thumbnails; click one for a full-size preview (click the backdrop or press Escape to close).
 
 ### Known limitations

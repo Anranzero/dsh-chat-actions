@@ -209,9 +209,7 @@ window.__ModuleLoader__.load({
       'ask.defaultQuestion': '请解释以上内容',
       'ask.failed': '发送失败：{message}',
       'ask.empty': '没有拿到选中的内容，请重新选择后再试',
-      'queue.paused': '对话已暂停',
       'queue.count': '{n} 条排队消息',
-      'queue.send': '发送',
       'queue.sendHint': '发送队列中的下一条',
       'queue.edit': '编辑',
       'queue.attachmentEdit': '含附件的消息暂不支持编辑，可直接发送或删除',
@@ -219,8 +217,6 @@ window.__ModuleLoader__.load({
       'queue.cancel': '取消',
       'queue.remove': '删除',
       'queue.sending': '发送中…',
-      'queue.waitingTurn': '等待下一轮',
-      'queue.updating': '正在更新队列…',
       'queue.waking': '正在恢复队列，请稍候',
       'queue.attachments': '{n} 个附件',
       'queue.image': '点击查看大图',
@@ -228,25 +224,17 @@ window.__ModuleLoader__.load({
       'queue.sendFailed': '发送失败，请重试',
       'queue.removeFailed': '删除失败：这条消息可能已经开始发送。',
       'queue.editFailed': '编辑失败：这条消息可能已经开始发送。',
-      'queue.auto': '等待自动发送',
-      'queue.autoHint': '本轮任务结束后按顺序发送；也可将指定消息加入当前任务的下一步骤',
       'queue.pausedHint': '对话已停止，点击队首发送按钮继续；消息仍按排队顺序保留',
       'queue.steer': '立即插话',
       'queue.steerHint': '加入当前任务，在下一步骤处理；不会中断正在执行的模型请求或工具',
       'queue.sendNext': '发送下一条',
-      'queue.next': '下一条自动发送的消息',
-      'queue.position': '排队第 {n} 条',
-      'queue.expandAll': '展开全部 {n} 条消息',
-      'queue.collapseAll': '收起消息列表',
       'queue.expandMessage': '展开查看完整消息',
       'queue.collapseMessage': '收起完整消息',
-      'queue.more': '还有 {n} 条，展开查看',
       'queue.finishEdit': '请先保存或取消当前编辑',
       'queue.editKeys': 'Ctrl/⌘ + Enter 保存 · Esc 取消',
       'queue.editChanged': '原消息已变化或开始发送，修改未提交；请先复制保留，再重新编辑。',
       'queue.editOrphaned': '原消息已离开队列。未保存的修改仍保留在这里。',
       'queue.editKeep': '可复制修改后关闭；不会自动重新发送',
-      'queue.unsaved': '未保存的队列编辑',
       'queue.copyEdit': '复制修改',
       'queue.copied': '已复制',
       'queue.copyFailed': '无法自动复制，已选中文字；请按 Ctrl/⌘ + C 复制。',
@@ -317,9 +305,7 @@ window.__ModuleLoader__.load({
       'ask.defaultQuestion': 'Please explain the content above',
       'ask.failed': 'Send failed: {message}',
       'ask.empty': 'No selection content was provided. Select the text again and retry.',
-      'queue.paused': 'Conversation paused',
       'queue.count': '{n} queued messages',
-      'queue.send': 'Send',
       'queue.sendHint': 'Send the next queued message',
       'queue.edit': 'Edit',
       'queue.attachmentEdit': 'Messages with attachments can be sent or removed, but cannot be edited yet',
@@ -327,8 +313,6 @@ window.__ModuleLoader__.load({
       'queue.cancel': 'Cancel',
       'queue.remove': 'Remove',
       'queue.sending': 'Sending…',
-      'queue.waitingTurn': 'Waiting for the next turn',
-      'queue.updating': 'Updating queue…',
       'queue.waking': 'Resuming the queue. Please wait.',
       'queue.attachments': '{n} attachment(s)',
       'queue.image': 'Click to enlarge',
@@ -336,25 +320,17 @@ window.__ModuleLoader__.load({
       'queue.sendFailed': 'Send failed, please retry',
       'queue.removeFailed': 'Removal failed: this message may have already started sending.',
       'queue.editFailed': 'Edit failed: this message may have already started sending.',
-      'queue.auto': 'Sends automatically',
-      'queue.autoHint': 'Messages send in order after this turn. A selected message can also join the current task at its next step.',
       'queue.pausedHint': 'The conversation is stopped. Send the first message to continue; queue order is preserved.',
       'queue.steer': 'Send now',
       'queue.steerHint': 'Join the current task at its next step; does not interrupt an active model request or tool.',
       'queue.sendNext': 'Send next',
-      'queue.next': 'Next message to send automatically',
-      'queue.position': 'Queue position {n}',
-      'queue.expandAll': 'Show all {n} messages',
-      'queue.collapseAll': 'Collapse message list',
       'queue.expandMessage': 'Show the complete message',
       'queue.collapseMessage': 'Collapse the message',
-      'queue.more': '{n} more — show all',
       'queue.finishEdit': 'Save or cancel the current edit first',
       'queue.editKeys': 'Ctrl/⌘ + Enter to save · Esc to cancel',
       'queue.editChanged': 'The original message changed or started sending. Your changes were not submitted; copy them before editing again.',
       'queue.editOrphaned': 'The original message left the queue. Your unsaved changes are still here.',
       'queue.editKeep': 'Copy your changes before closing; they will not be resent automatically',
-      'queue.unsaved': 'Unsaved queue edit',
       'queue.copyEdit': 'Copy changes',
       'queue.copied': 'Copied',
       'queue.copyFailed': 'Could not copy automatically. Text selected; press Ctrl/⌘ + C to copy.',
@@ -1281,7 +1257,6 @@ window.__ModuleLoader__.load({
       const [editing, setEditing] = useState(null);
       const [busy, setBusy] = useState(null);
       const [preview, setPreview] = useState(null);
-      const [collapsed, setCollapsed] = useState(false);
       const [activeIndex, setActiveIndex] = useState(0);
       const [focused, setFocused] = useState(false);
       const [expanded, setExpanded] = useState(null);
@@ -1367,7 +1342,6 @@ window.__ModuleLoader__.load({
         const text = textOf(current.content);
         changeEditing({ id: current.id, text, originalText: text });
         setRowError(null);
-        setCollapsed(false);
       };
       const activeQueueIndex = Math.min(activeIndex, Math.max(0, queue.length - 1));
       // Keyboard operation is scoped to the panel itself: the composer keeps
@@ -1392,14 +1366,10 @@ window.__ModuleLoader__.load({
             if (event.key === 'End') return rows.length - 1;
             return clamp(current + (event.key === 'ArrowDown' ? 1 : -1));
           });
-          if (collapsed) setCollapsed(false);
           return;
         }
         if (event.repeat) return;
         const target = rows[clamp(activeQueueIndex)];
-        // Acting on a row hidden by the collapse toggle would be surprising:
-        // reveal the list first, exactly as arrow navigation does.
-        if (collapsed) setCollapsed(false);
         if (event.key === 'Enter') {
           event.preventDefault();
           if (target) sendRow(target);
@@ -1502,12 +1472,13 @@ window.__ModuleLoader__.load({
           'data-queue-active': isActive ? 'true' : undefined,
           'aria-busy': operation ? 'true' : 'false',
           style: {
-            display: 'flex', flexDirection: 'column', gap: '5px', minWidth: 0, flexShrink: 0, padding: '6px 0',
-            borderTop: '0.5px solid var(--dsw-alias-border-l2, rgba(127,127,127,.16))',
-            ...(isActive ? { outline: '1px solid var(--dsw-alias-label-primary, rgba(127,127,127,.55))', outlineOffset: '-1px', borderRadius: '4px' } : {})
+            display: 'flex', flexDirection: 'column', gap: '4px', minWidth: 0, flexShrink: 0, padding: '7px 10px',
+            borderRadius: '14px',
+            background: 'var(--dsw-alias-bg-module-platform, rgba(127,127,127,.10))',
+            border: '0.5px solid var(--dsw-alias-border-l2, rgba(127,127,127,.18))',
+            ...(isActive ? { outline: '1px solid var(--dsw-alias-label-primary, rgba(127,127,127,.55))', outlineOffset: '-1px' } : {})
           }
-        }, isEditing ? editor() : h('div', { style: { display: 'flex', alignItems: 'flex-start', gap: '7px', minWidth: 0 } },
-          h('span', { title: formatT(t, index === 0 ? 'queue.next' : 'queue.position', { n: index + 1 }), style: { color: TOKEN_MUTED, fontSize: '11px', lineHeight: '28px', minWidth: '15px', textAlign: 'center', flex: 'none' } }, String(index + 1)),
+        }, isEditing ? editor() : h('div', { style: { display: 'flex', alignItems: 'flex-start', gap: '8px', minWidth: 0 } },
           h('div', { style: { flex: '1 1 auto', minWidth: 0 } },
             h('button', { type: 'button', className: 'chat-actions-queue-text', 'data-chat-actions-queue-preview': '',
               'aria-expanded': full, title: formatT(t, full ? 'queue.collapseMessage' : 'queue.expandMessage'),
@@ -1520,7 +1491,7 @@ window.__ModuleLoader__.load({
               !full && files.length > MAX_QUEUE_THUMBS ? textButton('+' + (files.length - MAX_QUEUE_THUMBS), () => setExpanded(row.id), { quiet: true }) : null
             ) : null
           ),
-          h('span', { className: 'chat-actions-queue-actions', style: { display: 'inline-flex', alignItems: 'center', flex: 'none', gap: '2px' } },
+          h('span', { className: 'chat-actions-queue-actions', style: { display: 'inline-flex', alignItems: 'center', flex: 'none', gap: '1px' } },
             control('edit', formatT(t, 'queue.edit'), () => beginEdit(row), {
               disabled: disabled || attachments > 0 || !text.trim(),
               title: editTitle + ' (E)',
@@ -1538,17 +1509,39 @@ window.__ModuleLoader__.load({
             })
           )
         ),
-          operation ? h('div', { role: 'status', 'aria-live': 'polite', 'data-chat-actions-queue-status': '', style: { color: TOKEN_MUTED, paddingInlineStart: '22px' } }, formatT(t, operation === 'edit' ? 'queue.saving' : operation === 'remove' ? 'queue.removing' : running ? 'queue.steering' : 'queue.sending')) : null,
+          operation ? h('div', { role: 'status', 'aria-live': 'polite', 'data-chat-actions-queue-status': '', style: { color: TOKEN_MUTED, fontSize: '11px' } }, formatT(t, operation === 'edit' ? 'queue.saving' : operation === 'remove' ? 'queue.removing' : running ? 'queue.steering' : 'queue.sending')) : null,
           errorView(row.id)
         );
       });
       for (const item of pending) rows.push(h('div', {
         key: 'p:' + String(item.requestId), 'data-chat-actions-queue-pending': '',
-        style: { display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, flexShrink: 0, padding: '6px 0', color: TOKEN_MUTED }
+        style: {
+          display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, flexShrink: 0, padding: '7px 10px',
+          borderRadius: '14px', color: TOKEN_MUTED,
+          background: 'var(--dsw-alias-bg-module-platform, rgba(127,127,127,.10))',
+          border: '0.5px solid var(--dsw-alias-border-l2, rgba(127,127,127,.18))'
+        }
       }, h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.text || formatT(t, 'queue.attachments', { n: (item.attachments || []).length })), h('span', { role: 'status' }, formatT(t, 'queue.admitting'))));
       // A queue claim can race editing. Preserve the unsaved draft even when the
       // last queue row disappears; never silently throw the user's changes away.
-      const orphanEditor = orphaned ? h('div', { 'data-chat-actions-queue-orphan': '', style: { borderTop: TOKEN_BORDER, paddingTop: '7px' } }, editor(), errorView(editing.id)) : null;
+      const orphanEditor = orphaned ? h('div', {
+        'data-chat-actions-queue-orphan': '',
+        style: {
+          padding: '7px 10px', borderRadius: '14px',
+          background: 'var(--dsw-alias-bg-module-platform, rgba(127,127,127,.10))',
+          border: '0.5px solid var(--dsw-alias-border-l2, rgba(127,127,127,.18))'
+        }
+      }, editor(), errorView(editing.id)) : null;
+      // Default look is just the stacked rounded cards above the composer.
+      // A one-line caption appears only when it carries the keyboard mode or
+      // the paused-head rule; otherwise it would duplicate composer chrome.
+      const contextHint = editing !== null
+        ? null
+        : focused && queue.length > 0
+          ? formatT(t, 'queue.shortcuts')
+          : !running && queue.length > 0
+            ? formatT(t, 'queue.pausedHint')
+            : null;
       return h(React.Fragment, null,
         h('div', {
           'data-chat-actions-queue': '',
@@ -1565,32 +1558,17 @@ window.__ModuleLoader__.load({
             boxSizing: 'border-box', minWidth: 0,
             width: 'calc(100% - var(--dsh-composer-side-clearance, 0px) - var(--dsh-composer-side-clearance, 0px))',
             maxWidth: 'var(--dsh-composer-card-max-width, 100%)', marginInline: 'auto',
-            display: 'flex', flexDirection: 'column', gap: '3px', padding: '6px 9px',
-            marginBottom: '6px', borderRadius: 'var(--dsw-radius-md, 8px)',
-            background: 'var(--dsw-alias-bg-module-platform, rgba(127,127,127,.08))',
-            border: '0.5px solid var(--dsw-alias-border-l2, rgba(127,127,127,.2))',
-            font: FONT, color: TOKEN_TEXT
+            display: 'flex', flexDirection: 'column', gap: '5px',
+            marginBottom: '6px', font: FONT, color: TOKEN_TEXT
           }
         },
           h('style', null, QUEUE_CSS),
-          h('div', { style: { display: 'flex', alignItems: 'center', gap: '7px', minWidth: 0, minHeight: '24px' } },
-            queueIcon('clock'),
-            h('span', {
-              style: { flex: '1 1 auto', minWidth: 0, color: TOKEN_MUTED, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-              title: formatT(t, focused && queue.length > 0 ? 'queue.shortcutHelp' : running ? 'queue.autoHint' : 'queue.pausedHint')
-            }, focused && queue.length > 0 && editing === null
-              ? formatT(t, 'queue.shortcuts')
-              : (formatT(t, rowCount === 0 ? 'queue.unsaved' : 'queue.count', { n: rowCount }) + (rowCount ? ' · ' + formatT(t, running ? 'queue.auto' : 'queue.paused') : ''))),
-            rowCount > 1 ? h('button', { type: 'button', 'data-chat-actions-queue-toggle': '',
-              className: 'chat-actions-queue-control', 'aria-expanded': !collapsed,
-              'aria-label': formatT(t, collapsed ? 'queue.expandAll' : 'queue.collapseAll', { n: rowCount }),
-              title: formatT(t, collapsed ? 'queue.expandAll' : 'queue.collapseAll', { n: rowCount }),
-              disabled: editing !== null,
-              onClick: () => { if (editingRef.current === null) setCollapsed(value => !value); }
-            }, queueIcon(collapsed ? 'expand' : 'collapse')) : null
-          ),
-          h('div', { 'data-chat-actions-queue-list': '', style: { display: 'flex', flexDirection: 'column', maxHeight: 'min(360px, 45vh)', overflowY: 'auto', overscrollBehavior: 'contain', minWidth: 0 } }, collapsed && editing === null ? rows.slice(0, 1) : rows),
-          collapsed && rowCount > 1 && editing === null ? textButton(formatT(t, 'queue.more', { n: rowCount - 1 }), () => setCollapsed(false), { quiet: true, attributes: { 'data-chat-actions-queue-more': '' } }) : null,
+          contextHint ? h('span', {
+            'data-chat-actions-queue-hint': '',
+            title: formatT(t, focused && queue.length > 0 ? 'queue.shortcutHelp' : 'queue.pausedHint'),
+            style: { color: TOKEN_MUTED, fontSize: '11px', lineHeight: '16px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
+          }, contextHint) : null,
+          h('div', { 'data-chat-actions-queue-list': '', style: { display: 'flex', flexDirection: 'column', gap: '5px', maxHeight: 'min(340px, 45vh)', overflowY: 'auto', overscrollBehavior: 'contain', minWidth: 0 } }, rows),
           orphanEditor
         ),
         preview === null ? null : h(QueueImagePreview, { image: preview, label: formatT(t, 'queue.image'), onClose: () => setPreview(null) })

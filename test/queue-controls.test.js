@@ -140,8 +140,33 @@ test('rows expose edit, remove and send controls, expanded by default', () => {
   assert.ok(rowControl(tree, 'first', 'remove'));
   assert.ok(rowControl(tree, 'first', 'send'));
   assert.ok(rowControl(tree, 'second', 'send'));
-  assert.ok(control(tree, 'more') === undefined);
-  assert.ok(control(tree, 'toggle'));
+  assert.equal(control(tree, 'more'), undefined);
+  assert.equal(control(tree, 'toggle'), undefined);
+  app.dispose();
+});
+
+test('queue items are rounded cards above the composer with no numbered header', () => {
+  const app = setup({ running: true });
+  const tree = app.render();
+  const cards = rowsOf(tree);
+  assert.equal(cards.length, 2);
+  for (const card of cards) {
+    assert.equal(card.props.style.borderRadius, '14px');
+    assert.equal(card.props.style.borderTop, undefined);
+    assert.match(card.props.style.border, /0\.5px solid/);
+    assert.equal(card.props.style.background.includes('--dsw-alias-bg-module-platform'), true);
+  }
+  // The strip itself is a plain stack: no panel background, border or padding.
+  assert.equal(panel(tree).props.style.background, undefined);
+  assert.equal(panel(tree).props.style.border, undefined);
+  assert.equal(panel(tree).props.style.padding, undefined);
+  // Running and unfocused draws no header/count line, and rows carry no number.
+  assert.equal(contents(tree).includes('queue.count'), false);
+  assert.equal(contents(tree).includes('queue.shortcuts'), false);
+  assert.equal(findAll(tree, node => node.type === 'span' && /^\d+\.$/.test(contents(node))).length, 0);
+  // Paused state keeps the one-line head-send rule as the only caption.
+  const paused = setup({ running: false }).render();
+  assert.ok(contents(paused).includes('queue.pausedHint'));
   app.dispose();
 });
 
@@ -263,11 +288,11 @@ test('keyboard: arrows move the active row and the strip advertises the shortcut
   assert.equal(row(tree, 'second').props['data-queue-active'], 'true');
   press(tree, 'Home');
   assert.equal(row(app.render(), 'first').props['data-queue-active'], 'true');
-  // Leaving the strip restores the normal status line.
+  // Leaving the strip removes the keyboard caption.
   container.props.onBlur(focusEvent(container));
   tree = app.render();
   assert.equal(row(tree, 'first').props['data-queue-active'], undefined);
-  assert.equal(contents(tree).includes('queue.count'), true);
+  assert.equal(contents(tree).includes('queue.shortcuts'), false);
   app.dispose();
 });
 
@@ -355,23 +380,6 @@ test('modifier chords and repeated keydowns never trigger queue actions', async 
   await flush();
   assert.equal(app.calls.length, 1);
   assert.equal(app.calls[0][0], 'wake');
-  app.dispose();
-});
-
-test('a collapsed strip expands before a keyboard action reaches a hidden row', async () => {
-  const app = setup({ running: true });
-  const tree = app.render();
-  control(tree, 'toggle').props.onClick();
-  let next = app.render();
-  assert.equal(rowsOf(next).length, 1);
-  focusPanel(next);
-  press(next, 'End');
-  next = app.render();
-  assert.equal(rowsOf(next).length, 2);
-  await press(next, 'Enter');
-  await flush();
-  assert.equal(app.calls.length, 1);
-  assert.equal(app.calls[0][1], 'second');
   app.dispose();
 });
 
@@ -536,19 +544,6 @@ test('a save against changed original text is rejected and keeps the draft', asy
   tree = app.render();
   assert.equal(textarea(tree).props.value, 'my draft');
   assert.ok(contents(control(row(tree, 'first'), 'error')).includes('queue.editChanged'));
-  app.dispose();
-});
-
-test('collapse hides later rows and the more button restores them', () => {
-  const app = setup({ rows: [...defaultRows(), textRow('third')] });
-  let tree = app.render();
-  control(tree, 'toggle').props.onClick();
-  tree = app.render();
-  assert.equal(rowsOf(tree).length, 1);
-  assert.ok(contents(control(tree, 'more')).includes('queue.more'));
-  control(tree, 'more').props.onClick();
-  tree = app.render();
-  assert.equal(rowsOf(tree).length, 3);
   app.dispose();
 });
 
