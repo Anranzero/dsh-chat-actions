@@ -204,11 +204,14 @@ test('a service without the registration API cannot create quote chips', () => {
 });
 
 test('queue layout follows the composer width and side-clearance contract', () => {
-  const style = source.match(/'data-chat-actions-queue': '',\s*style: \{([^}]+)\}/)?.[1];
-  assert.ok(style);
-  assert.match(style, /maxWidth:\s*'var\(--dsh-composer-card-max-width, 100%\)'/);
-  assert.match(style, /width:\s*'calc\(100% - var\(--dsh-composer-side-clearance, 0px\) - var\(--dsh-composer-side-clearance, 0px\)\)'/);
-  assert.match(style, /marginInline:\s*'auto'/);
-  assert.match(style, /boxSizing:\s*'border-box'/);
-  assert.match(style, /minWidth:\s*0/);
+  const start = source.indexOf("'data-chat-actions-queue': ''");
+  assert.ok(start >= 0, 'the queue panel must own the shipped queue cell');
+  const end = source.indexOf("'data-chat-actions-queue-list'", start);
+  assert.ok(end > start);
+  const block = source.slice(start, end);
+  assert.match(block, /maxWidth:\s*'var\(--dsh-composer-card-max-width, 100%\)'/);
+  assert.match(block, /width:\s*'calc\(100% - var\(--dsh-composer-side-clearance, 0px\) - var\(--dsh-composer-side-clearance, 0px\)\)'/);
+  assert.match(block, /marginInline:\s*'auto'/);
+  assert.match(block, /boxSizing:\s*'border-box'/);
+  assert.match(block, /minWidth:\s*0/);
 });

@@ -9,15 +9,16 @@ window.__ModuleLoader__.load({
     const NS = 'chatActions';
     /** Build marker: bumped on every behaviour change so the running page can
      *  prove which bundle it actually loaded (see console + toolbar tooltip). */
-    const BUILD = 'v18-side-chat-model-and-stop+effort-memory-native-settings';
+    const BUILD = 'v22-queue-manager-shortcuts';
+    /** How many queued attachments a row shows before the rest collapse into a
+     *  count button; the full list stays one click away. */
+    const MAX_QUEUE_THUMBS = 3;
     const ASK_KIND = 'chat-actions-ask';
     const ASK_ID = 'dsh-chat-actions/ask';
     const TOOLS_ID = 'chat-actions-tools';
     const SENTINEL_TEXT = '·';
     const QUOTE_SOURCE = 'chat-actions-quote';
     const QUOTE_LABEL_CHARS = 60;
-    /** How many queued images a row shows before the rest collapse into a count. */
-    const MAX_QUEUE_THUMBS = 3;
     let hostSwitch;
     try { hostSwitch = require('@deepseek-ai/dsh-client-ui-primitives').Switch; } catch (_error) { /* older host */ }
     let browserStorage;
@@ -227,7 +228,37 @@ window.__ModuleLoader__.load({
       'queue.sendFailed': '发送失败，请重试',
       'queue.removeFailed': '删除失败：这条消息可能已经开始发送。',
       'queue.editFailed': '编辑失败：这条消息可能已经开始发送。',
-      'queue.claimed': '已开始发送'
+      'queue.auto': '等待自动发送',
+      'queue.autoHint': '本轮任务结束后按顺序发送；也可将指定消息加入当前任务的下一步骤',
+      'queue.pausedHint': '对话已停止，点击队首发送按钮继续；消息仍按排队顺序保留',
+      'queue.steer': '立即插话',
+      'queue.steerHint': '加入当前任务，在下一步骤处理；不会中断正在执行的模型请求或工具',
+      'queue.sendNext': '发送下一条',
+      'queue.next': '下一条自动发送的消息',
+      'queue.position': '排队第 {n} 条',
+      'queue.expandAll': '展开全部 {n} 条消息',
+      'queue.collapseAll': '收起消息列表',
+      'queue.expandMessage': '展开查看完整消息',
+      'queue.collapseMessage': '收起完整消息',
+      'queue.more': '还有 {n} 条，展开查看',
+      'queue.finishEdit': '请先保存或取消当前编辑',
+      'queue.editKeys': 'Ctrl/⌘ + Enter 保存 · Esc 取消',
+      'queue.editChanged': '原消息已变化或开始发送，修改未提交；请先复制保留，再重新编辑。',
+      'queue.editOrphaned': '原消息已离开队列。未保存的修改仍保留在这里。',
+      'queue.editKeep': '可复制修改后关闭；不会自动重新发送',
+      'queue.unsaved': '未保存的队列编辑',
+      'queue.copyEdit': '复制修改',
+      'queue.copied': '已复制',
+      'queue.copyFailed': '无法自动复制，已选中文字；请按 Ctrl/⌘ + C 复制。',
+      'queue.closeEdit': '关闭编辑',
+      'queue.retry': '重试',
+      'queue.saving': '正在保存，等待队列确认…',
+      'queue.removing': '正在移除，等待队列确认…',
+      'queue.steering': '正在加入当前任务…',
+      'queue.admitting': '正在加入队列…',
+      'queue.file': '文件',
+      'queue.shortcuts': '↑↓ 选择 · Enter 发送 · E 编辑 · Del 删除',
+      'queue.shortcutHelp': '↑↓ 选择消息，Enter 发送或插话，E 编辑，Del 删除；Tab 进入队列'
     };
     const en = {
       rememberEffort: 'Remember model reasoning effort',
@@ -305,7 +336,37 @@ window.__ModuleLoader__.load({
       'queue.sendFailed': 'Send failed, please retry',
       'queue.removeFailed': 'Removal failed: this message may have already started sending.',
       'queue.editFailed': 'Edit failed: this message may have already started sending.',
-      'queue.claimed': 'Started sending'
+      'queue.auto': 'Sends automatically',
+      'queue.autoHint': 'Messages send in order after this turn. A selected message can also join the current task at its next step.',
+      'queue.pausedHint': 'The conversation is stopped. Send the first message to continue; queue order is preserved.',
+      'queue.steer': 'Send now',
+      'queue.steerHint': 'Join the current task at its next step; does not interrupt an active model request or tool.',
+      'queue.sendNext': 'Send next',
+      'queue.next': 'Next message to send automatically',
+      'queue.position': 'Queue position {n}',
+      'queue.expandAll': 'Show all {n} messages',
+      'queue.collapseAll': 'Collapse message list',
+      'queue.expandMessage': 'Show the complete message',
+      'queue.collapseMessage': 'Collapse the message',
+      'queue.more': '{n} more — show all',
+      'queue.finishEdit': 'Save or cancel the current edit first',
+      'queue.editKeys': 'Ctrl/⌘ + Enter to save · Esc to cancel',
+      'queue.editChanged': 'The original message changed or started sending. Your changes were not submitted; copy them before editing again.',
+      'queue.editOrphaned': 'The original message left the queue. Your unsaved changes are still here.',
+      'queue.editKeep': 'Copy your changes before closing; they will not be resent automatically',
+      'queue.unsaved': 'Unsaved queue edit',
+      'queue.copyEdit': 'Copy changes',
+      'queue.copied': 'Copied',
+      'queue.copyFailed': 'Could not copy automatically. Text selected; press Ctrl/⌘ + C to copy.',
+      'queue.closeEdit': 'Close editor',
+      'queue.retry': 'Retry',
+      'queue.saving': 'Saving — waiting for the queue…',
+      'queue.removing': 'Removing — waiting for the queue…',
+      'queue.steering': 'Joining the current task…',
+      'queue.admitting': 'Joining the queue…',
+      'queue.file': 'File',
+      'queue.shortcuts': '↑↓ select · Enter send · E edit · Del remove',
+      'queue.shortcutHelp': '↑↓ select a message, Enter send or steer, E edit, Del remove; Tab enters the queue'
     };
 
     // ------------------------------------------------------------------
@@ -320,6 +381,8 @@ window.__ModuleLoader__.load({
       return out;
     }
 
+    /** Image and file blocks of one queued message. The strip only reports
+     *  their count; sending keeps the original content untouched. */
     function attachmentCountOf(content) {
       if (!Array.isArray(content)) return 0;
       let count = 0;
@@ -329,8 +392,8 @@ window.__ModuleLoader__.load({
       return count;
     }
 
-    /** Attachment blocks of one queued message, in order. An image carries the
-     *  durable attachment the host resolves to a URL; a file only its name. */
+    /** Image and file blocks of one queued message, in order. An image carries
+     *  the durable attachment the host resolves to a URL; a file only its name. */
     function attachmentsOf(content) {
       if (!Array.isArray(content)) return [];
       const out = [];
@@ -1042,13 +1105,13 @@ window.__ModuleLoader__.load({
     }
 
     // ------------------------------------------------------------------
-    // Paused queue bar (requirement 2).
-    // Sending wakes the driver with a one-shot sentinel prompt so the Host
-    // claims the oldest queued message natively — attachments included —
-    // then removes the sentinel again. The shipped queue dock is hidden
-    // while this bar is mounted.
+    // Queue dock (requirement 2).
+    // This cell REPLACES the shipped queue dock, so the page shows exactly
+    // one queue strip: rows keep their native identity (attachments
+    // included), the running turn can steer any row into its next step, and
+    // a paused conversation can wake its FIFO head through a one-shot
+    // sentinel prompt the Host claims natively.
     // ------------------------------------------------------------------
-
 
     /** Thumbnail geometry: fixed so a row keeps its height while the host
      *  resolves the durable attachment into a URL. */
@@ -1123,282 +1186,414 @@ window.__ModuleLoader__.load({
       }));
     }
 
+    // All queue styles are scoped to this dock; no host/global selectors.
+    const QUEUE_CSS = `
+      [data-chat-actions-queue] .chat-actions-queue-control {
+        box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center;
+        flex: none; width: 28px; height: 28px; padding: 0; gap: 5px;
+        border: 1px solid transparent; border-radius: 6px;
+        background: transparent; color: var(--dsw-alias-label-secondary, #999);
+        font: inherit; cursor: pointer;
+        transition: color 120ms ease, background-color 120ms ease, border-color 120ms ease;
+      }
+      [data-chat-actions-queue] .chat-actions-queue-control:not(:disabled):hover {
+        background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.18));
+        color: var(--dsw-alias-label-primary, inherit);
+      }
+      [data-chat-actions-queue] .chat-actions-queue-remove:not(:disabled):hover {
+        color: var(--dsw-alias-label-error, #d9534f);
+        background: color-mix(in srgb, currentColor 12%, transparent);
+        border-color: color-mix(in srgb, currentColor 24%, transparent);
+      }
+      [data-chat-actions-queue] .chat-actions-queue-remove:not(:disabled):active {
+        color: var(--dsw-alias-label-error, #d9534f);
+        background: color-mix(in srgb, currentColor 20%, transparent);
+        border-color: color-mix(in srgb, currentColor 32%, transparent);
+      }
+      [data-chat-actions-queue] :is(button, textarea):focus-visible {
+        outline: 2px solid var(--dsw-alias-label-primary, currentColor); outline-offset: -2px;
+      }
+      [data-chat-actions-queue] button:disabled { opacity: .4; cursor: default; }
+      [data-chat-actions-queue] .chat-actions-queue-send {
+        width: auto; min-width: 28px; padding: 0 7px;
+        background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.18));
+        color: var(--dsw-alias-label-primary, inherit);
+      }
+      [data-chat-actions-queue] .chat-actions-queue-text {
+        display: block; width: 100%; min-width: 0; padding: 3px 0; border: 0; border-radius: 4px;
+        background: transparent; color: inherit; text-align: start; font: inherit; cursor: pointer;
+      }
+      [data-chat-actions-queue] .chat-actions-queue-clamp {
+        display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+        white-space: pre-wrap; overflow-wrap: anywhere; line-height: 20px;
+      }
+      [data-chat-actions-queue] .chat-actions-queue-full {
+        display: block; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 20px;
+        max-height: 200px; overflow-y: auto;
+      }
+      [data-chat-actions-queue] .chat-actions-queue-file {
+        display: inline-block; max-width: 180px; padding: 2px 6px; border-radius: 4px;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.12));
+      }
+      @media (max-width: 520px) {
+        [data-chat-actions-queue] .chat-actions-queue-actions { gap: 0 !important; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        [data-chat-actions-queue] .chat-actions-queue-control { transition: none; }
+      }
+    `;
+
+    function queueIcon(name) {
+      const paths = {
+        remove: 'M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6',
+        edit: 'm16 3 5 5M4 15 15 4a2 2 0 0 1 5 5L9 20l-6 1z',
+        send: 'M12 19V5m-6 6 6-6 6 6',
+        expand: 'm6 9 6 6 6-6',
+        collapse: 'm6 15 6-6 6 6',
+        clock: 'M12 8v4l3 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0'
+      };
+      return h('svg', {
+        width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none',
+        stroke: 'currentColor', strokeWidth: 1.75, strokeLinecap: 'round', strokeLinejoin: 'round',
+        'aria-hidden': true, focusable: 'false', style: { display: 'block', flex: 'none', pointerEvents: 'none' }
+      }, h('path', { d: paths[name] }));
+    }
+
     function PausedQueueBar(props) {
-      const { useSession, useProjection, useInput, inputActions, updateQueue, wakeQueue, sentinelIds, notify, loadImage, t } = props;
+      const { useSession, useProjection, updateQueue, wakeQueue, sentinelIds, notify, loadImage, t } = props;
       const inbox = typeof useProjection === 'function' ? useProjection('inbox') : undefined;
       const pendingSubmissions = useSession((state) => state.pendingSubmissions) || [];
       const running = useSession((state) => state.running) === true;
-      const subagent = useSession((state) => (state.subagent === undefined ? null : state.subagent));
-      const input = typeof useInput === 'function' ? useInput((state) => state) : undefined;
-
-      const queueMutable = subagent === null || (subagent && subagent.address && subagent.address.mode === 'continuable');
-      const sentinels = useRef(new Set());
-
+      const subagent = useSession((state) => state.subagent === undefined ? null : state.subagent);
+      const queueMutable = subagent === null || subagent?.address?.mode === 'continuable';
       const queue = useMemo(() => {
-        const rows = (inbox && inbox['next-turn']) || [];
-        const inChat = new Set();
-        for (const item of pendingSubmissions) {
-          if (item.placement === 'transcript') inChat.add(item.requestId);
-        }
-        const visible = [];
-        for (const row of rows) {
-          const source = row && row.source;
-          const rpcId = source && source.kind === 'user' ? source.rpcId : undefined;
-          if (rpcId && sentinelIds && sentinelIds.has(rpcId)) continue;
-          if (rpcId && inChat.has(rpcId)) continue;
-          visible.push(row);
-        }
-        return visible;
-      }, [inbox, pendingSubmissions]);
-
+        const transcript = new Set(pendingSubmissions.filter(item => item.placement === 'transcript').map(item => item.requestId));
+        return ((inbox && inbox['next-turn']) || []).filter(row => {
+          const rpcId = row?.source?.kind === 'user' ? row.source.rpcId : undefined;
+          return !rpcId || (!sentinelIds?.has(rpcId) && !transcript.has(rpcId));
+        });
+      }, [inbox, pendingSubmissions, sentinelIds]);
       const pending = useMemo(() => {
-        const admitted = new Set();
-        for (const row of queue) {
-          const source = row && row.source;
-          if (source && source.kind === 'user' && source.rpcId) admitted.add(source.rpcId);
-        }
-        return pendingSubmissions.filter((item) => item.placement === 'queued' && !admitted.has(item.requestId));
+        const admitted = new Set(queue.filter(row => row?.source?.kind === 'user').map(row => row.source.rpcId));
+        return pendingSubmissions.filter(item => item.placement === 'queued' && !admitted.has(item.requestId));
       }, [pendingSubmissions, queue]);
-
-      const queueRef = useRef(queue);
-      queueRef.current = queue;
-
       const [editing, setEditing] = useState(null);
       const [busy, setBusy] = useState(null);
-      const busyRef = useRef(false);
       const [preview, setPreview] = useState(null);
       const [collapsed, setCollapsed] = useState(false);
+      const [activeIndex, setActiveIndex] = useState(0);
+      const [focused, setFocused] = useState(false);
+      const [expanded, setExpanded] = useState(null);
+      const [rowError, setRowError] = useState(null);
+      const [copied, setCopied] = useState(false);
+      const [, refreshConfirmations] = useState(0);
+      const queueRef = useRef(queue);
+      const editingRef = useRef(editing);
+      const busyRef = useRef(false);
+      const runningRef = useRef(running);
+      const mutableRef = useRef(queueMutable);
+      const confirmations = useRef(new Map());
+      const editorRef = useRef(null);
+      queueRef.current = queue;
+      editingRef.current = editing;
+      runningRef.current = running;
+      mutableRef.current = queueMutable;
       const rowCount = queue.length + pending.length;
+      const editingRow = editing === null ? null : queue.find(row => row.id === editing.id);
+      const orphaned = editing !== null && !editingRow;
 
+      // An RPC acknowledgement is not a new projection. Keep that row locked
+      // until the host actually reflects the action, so stale UI cannot repeat it.
       useEffect(() => {
-        if (editing !== null && !queue.some((row) => row.id === editing.id)) setEditing(null);
-      }, [editing, queue]);
+        let changed = false;
+        for (const [id, action] of confirmations.current) {
+          const row = queue.find(item => item.id === id);
+          if (!row || (action.kind === 'edit' && textOf(row.content) === action.text)) {
+            confirmations.current.delete(id);
+            changed = true;
+          }
+        }
+        if (changed) refreshConfirmations(value => value + 1);
+        if (rowError && !queue.some(row => row.id === rowError.id) && editing?.id !== rowError.id) setRowError(null);
+      }, [queue, editing, rowError]);
 
-      // This component OWNS the queue cell (the shipped dock is replaced, not
-      // duplicated): the strip must stay visible in every state, so it only
-      // yields when there is nothing queued at all.
-      if (rowCount === 0) return null;
-
-      const notifyError = (text) => {
-        try { if (typeof notify === 'function') notify('error', text); } catch (_error) { /* ignore */ }
+      if (rowCount === 0 && editing === null) return null;
+      const changeEditing = value => {
+        editingRef.current = value;
+        setEditing(value);
+        setCopied(false);
       };
-
-      const sendNext = async () => {
-        const first = queue[0];
-        if (!first || !queueMutable || busyRef.current) return;
+      const fail = (id, kind, message) => {
+        setRowError({ id, kind, message });
+        try { notify?.('error', message); } catch (_error) { /* inline error remains */ }
+      };
+      const isLocked = id => busyRef.current || confirmations.current.has(id);
+      const runAction = async (row, kind, action, text) => {
+        if (!mutableRef.current || isLocked(row.id)) return;
         busyRef.current = true;
-        setBusy(first.id);
+        setBusy({ id: row.id, kind });
+        setRowError(null);
         try {
-          await wakeQueue(first.id);
+          await action();
+          const current = queueRef.current.find(item => item.id === row.id);
+          if (current && (kind !== 'edit' || textOf(current.content) !== text)) {
+            confirmations.current.set(row.id, { kind, text });
+          }
+          if (kind === 'edit') changeEditing(null);
         } catch (error) {
-          // Surface the reason instead of one opaque sentence: this path is the
-          // only way a paused queue can move, so a silent failure is fatal.
-          const detail = error && error.message ? String(error.message) : '';
-          notifyError(formatT(t, 'queue.sendFailed') + (detail ? ' · ' + detail : ''));
+          const key = kind === 'send' ? 'queue.sendFailed' : kind === 'edit' ? 'queue.editFailed' : 'queue.removeFailed';
+          const detail = kind === 'send' && error?.message ? ' · ' + String(error.message) : '';
+          fail(row.id, kind, formatT(t, key) + detail);
         } finally {
           busyRef.current = false;
           setBusy(null);
         }
       };
-
-      const saveEdit = async () => {
-        if (editing === null || editing.text.trim() === '' || !queueMutable || busyRef.current) return;
-        const row = queue.find((item) => item.id === editing.id);
-        if (!row || attachmentCountOf(row.content) > 0) return;
-        busyRef.current = true;
-        setBusy(editing.id);
-        try {
-          await updateQueue(editing.id, { kind: 'edit', content: [{ type: 'text', text: editing.text }] });
-          setEditing(null);
-        } catch (_error) {
-          notifyError(formatT(t, 'queue.editFailed'));
-        } finally {
-          busyRef.current = false;
-          setBusy((current) => (current === editing.id ? null : current));
+      const sendRow = row => {
+        const current = queueRef.current.find(item => item.id === row.id);
+        if (!current || editingRef.current !== null || (!runningRef.current && queueRef.current[0]?.id !== row.id)) return;
+        return runAction(current, 'send', () => wakeQueue(current.id));
+      };
+      const removeRow = row => {
+        const current = queueRef.current.find(item => item.id === row.id);
+        if (!current || editingRef.current !== null) return;
+        return runAction(current, 'remove', () => updateQueue(current.id, { kind: 'remove' }));
+      };
+      const beginEdit = row => {
+        const current = queueRef.current.find(item => item.id === row.id);
+        if (!current || !mutableRef.current || isLocked(row.id) || editingRef.current !== null
+          || attachmentCountOf(current.content) > 0 || textOf(current.content).trim() === '') return;
+        const text = textOf(current.content);
+        changeEditing({ id: current.id, text, originalText: text });
+        setRowError(null);
+        setCollapsed(false);
+      };
+      const activeQueueIndex = Math.min(activeIndex, Math.max(0, queue.length - 1));
+      // Keyboard operation is scoped to the panel itself: the composer keeps
+      // Enter, buttons keep their native activation, and typing can never
+      // delete a queued message. Tab (or a click on the strip) enters the
+      // queue; arrows move the active row; Enter/E/Del act on that row.
+      const onPanelKeyDown = event => {
+        if (event.isComposing || event.nativeEvent?.isComposing || event.keyCode === 229) return;
+        if (event.target !== event.currentTarget) return;
+        if (editingRef.current !== null) return;
+        // Ctrl/⌘/Alt chords belong to the browser or the Host, never to a
+        // destructive queue action; repeat keydowns would delete several rows.
+        if (event.ctrlKey || event.metaKey || event.altKey) return;
+        const rows = queueRef.current;
+        if (rows.length === 0) return;
+        const clamp = value => Math.max(0, Math.min(rows.length - 1, value));
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'Home' || event.key === 'End') {
+          event.preventDefault();
+          setActiveIndex(value => {
+            const current = clamp(Number.isInteger(value) ? value : 0);
+            if (event.key === 'Home') return 0;
+            if (event.key === 'End') return rows.length - 1;
+            return clamp(current + (event.key === 'ArrowDown' ? 1 : -1));
+          });
+          if (collapsed) setCollapsed(false);
+          return;
+        }
+        if (event.repeat) return;
+        const target = rows[clamp(activeQueueIndex)];
+        // Acting on a row hidden by the collapse toggle would be surprising:
+        // reveal the list first, exactly as arrow navigation does.
+        if (collapsed) setCollapsed(false);
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          if (target) sendRow(target);
+        } else if (event.key === 'e' || event.key === 'E') {
+          event.preventDefault();
+          if (target) beginEdit(target);
+        } else if (event.key === 'Delete' || event.key === 'Backspace') {
+          event.preventDefault();
+          if (target) removeRow(target);
+        } else if (event.key === 'Escape') {
+          event.preventDefault();
+          setActiveIndex(0);
+          if (event.currentTarget && typeof event.currentTarget.blur === 'function') event.currentTarget.blur();
         }
       };
-
-      const removeRow = async (row) => {
-        if (!queueMutable || busyRef.current) return;
-        busyRef.current = true;
-        setBusy(row.id);
+      const saveEdit = () => {
+        const draft = editingRef.current;
+        if (!draft || !draft.text.trim() || !mutableRef.current || isLocked(draft.id)) return;
+        const row = queueRef.current.find(item => item.id === draft.id);
+        if (!row || attachmentCountOf(row.content) > 0 || textOf(row.content) !== draft.originalText) {
+          fail(draft.id, 'edit', formatT(t, 'queue.editChanged'));
+          return;
+        }
+        if (draft.text === draft.originalText) { changeEditing(null); return; }
+        return runAction(row, 'edit', () => updateQueue(row.id, { kind: 'edit', content: [{ type: 'text', text: draft.text }] }), draft.text);
+      };
+      const copyEdit = async () => {
         try {
-          await updateQueue(row.id, { kind: 'remove' });
+          if (typeof window.navigator?.clipboard?.writeText !== 'function') throw new Error('clipboard unavailable');
+          await window.navigator.clipboard.writeText(editingRef.current.text);
+          setCopied(true);
         } catch (_error) {
-          notifyError(formatT(t, 'queue.removeFailed'));
-        } finally {
-          busyRef.current = false;
-          setBusy((current) => (current === row.id ? null : current));
+          editorRef.current?.focus();
+          editorRef.current?.select();
+          fail(editingRef.current.id, 'copy', formatT(t, 'queue.copyFailed'));
         }
       };
+      // All row actions are icon-only and share one 28x28 ghost style; the
+      // text-and-background variant is reserved for textButton actions.
+      const control = (name, label, onClick, options = {}) => h('button', {
+        type: 'button', className: 'chat-actions-queue-control' + (name === 'remove' ? ' chat-actions-queue-remove' : '') + (name === 'send' && options.text ? ' chat-actions-queue-send' : ''),
+        ['data-chat-actions-queue-' + name]: '', title: options.title || label, 'aria-label': options.title || label,
+        ...(options.shortcut ? { 'aria-keyshortcuts': options.shortcut } : {}),
+        disabled: options.disabled === true, onClick
+      }, options.text ? h('span', { className: 'chat-actions-queue-send-label' }, label) : null, queueIcon(name));
+      const textButton = (label, onClick, options = {}) => h('button', {
+        type: 'button', onClick, disabled: options.disabled === true, ...options.attributes,
+        className: 'chat-actions-queue-control chat-actions-queue-send',
+        style: options.quiet ? { background: 'transparent' } : undefined
+      }, label);
+      const editor = () => h('div', { style: { display: 'flex', flexDirection: 'column', gap: '7px', minWidth: 0 } },
+        orphaned ? h('div', { role: 'status', style: { color: TOKEN_MUTED, lineHeight: '18px' } }, formatT(t, 'queue.editOrphaned')) : null,
+        h('textarea', {
+          ref: editorRef, value: editing.text, autoFocus: true, rows: 3,
+          name: 'chat-actions-queued-message', autoComplete: 'off', 'aria-label': formatT(t, 'queue.edit'),
+          disabled: busy !== null,
+          onChange: event => changeEditing({ ...editingRef.current, text: event.target.value }),
+          onKeyDown: event => {
+            if (event.isComposing || event.nativeEvent?.isComposing || event.keyCode === 229) return;
+            if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); saveEdit(); }
+            else if (event.key === 'Escape' && !busyRef.current) { event.preventDefault(); changeEditing(null); }
+          },
+          style: { boxSizing: 'border-box', width: '100%', minWidth: 0, minHeight: '66px', maxHeight: '240px', padding: '7px 9px', resize: 'vertical', borderRadius: '7px', border: TOKEN_BORDER, background: 'var(--dsw-alias-bg-base, transparent)', color: TOKEN_TEXT, font: FONT, lineHeight: '20px' }
+        }),
+        h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' } },
+          h('span', { style: { color: TOKEN_MUTED, fontSize: '11px' } }, formatT(t, orphaned ? 'queue.editKeep' : 'queue.editKeys')),
+          h('span', { style: { display: 'inline-flex', gap: '4px' } },
+            orphaned ? textButton(formatT(t, copied ? 'queue.copied' : 'queue.copyEdit'), copyEdit, { attributes: { 'data-chat-actions-queue-copy': '' } })
+              : textButton(formatT(t, 'queue.save'), saveEdit, { disabled: busy !== null || !queueMutable || !editing.text.trim() || editing.text === editing.originalText, attributes: { 'data-chat-actions-queue-save': '' } }),
+            textButton(formatT(t, orphaned ? 'queue.closeEdit' : 'queue.cancel'), () => { if (!busyRef.current) changeEditing(null); }, { quiet: true, disabled: busy !== null, attributes: { 'data-chat-actions-queue-dismiss': '' } })
+          )
+        )
+      );
+      const errorView = id => rowError?.id === id ? h('div', {
+        role: 'alert', 'data-chat-actions-queue-error': '', style: { color: 'var(--dsw-alias-label-error, #d9534f)', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '5px', lineHeight: '18px', overflowWrap: 'anywhere' }
+      }, h('span', null, rowError.message), ['remove', 'send'].includes(rowError.kind) ? textButton(formatT(t, 'queue.retry'), () => {
+        const row = queueRef.current.find(item => item.id === id);
+        if (row) return rowError.kind === 'remove' ? removeRow(row) : sendRow(row);
+      }, { quiet: true, disabled: busy !== null || editing !== null || !queueMutable, attributes: { 'data-chat-actions-queue-retry': '' } }) : null) : null;
 
-      const smallButton = (labelText, onClick, options) => h('button', {
-        type: 'button',
-        onClick,
-        disabled: options && options.disabled ? true : undefined,
-        title: options && options.title ? options.title : labelText,
-        'aria-label': options && options.title ? options.title : labelText,
-        style: {
-          font: FONT,
-          height: '20px',
-          padding: '0 7px',
-          borderRadius: '6px',
-          border: 'none',
-          cursor: options && options.disabled ? 'default' : 'pointer',
-          background: options && options.quiet ? 'transparent' : TOKEN_HOVER,
-          color: options && options.quiet ? TOKEN_MUTED : TOKEN_TEXT,
-          opacity: options && options.disabled ? 0.4 : 1,
-          flex: 'none'
-        }
-      }, labelText);
-
-      const rows = [];
-      queue.forEach((row, index) => {
+      const rows = queue.map((row, index) => {
         const text = textOf(row.content);
         const attachments = attachmentCountOf(row.content);
         const blocks = attachmentsOf(row.content);
-        const images = [];
-        const files = [];
-        for (const entry of blocks) {
-          if (entry.type === 'image') images.push(entry);
-          else files.push(entry);
-        }
-        const shownImages = images.slice(0, MAX_QUEUE_THUMBS);
-        const isEditing = editing !== null && editing.id === row.id;
-        const isFirst = index === 0;
-        rows.push(h('div', {
-          key: 'q:' + String(row.id),
-          'data-chat-actions-queue-row': '',
-          style: { display: 'flex', alignItems: isEditing ? 'flex-start' : 'center', gap: '6px', minWidth: 0, height: isEditing ? 'auto' : '22px' }
-        },
-          isEditing ? null : shownImages.map((entry, imageIndex) => h(QueueThumb, {
-            key: 'thumb:' + String(row.id) + ':' + imageIndex,
-            attachment: entry.attachment,
-            loadImage,
-            label: formatT(t, 'queue.image'),
-            onOpen: setPreview
-          })),
-          isEditing
-            ? h('textarea', {
-              value: editing.text,
-              autoFocus: true,
-              rows: 2,
-              name: 'chat-actions-queued-message', autoComplete: 'off',
-              disabled: busy !== null,
-              'aria-label': formatT(t, 'queue.edit'),
-              onChange: (event) => setEditing({ id: row.id, text: event.target.value }),
-              onKeyDown: (event) => {
-                if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent?.isComposing) { event.preventDefault(); saveEdit(); }
-                else if (event.key === 'Escape') { event.preventDefault(); setEditing(null); }
-              },
-              style: {
-                flex: '1 1 auto', minWidth: 0, minHeight: '40px', padding: '3px 6px', resize: 'vertical',
-                borderRadius: '6px', border: TOKEN_BORDER, background: 'var(--dsw-alias-bg-base, transparent)',
-                color: TOKEN_TEXT, font: FONT
-              }
+        const images = blocks.filter(entry => entry.type === 'image');
+        const files = blocks.filter(entry => entry.type === 'file');
+        const full = expanded === row.id;
+        const isEditing = editing?.id === row.id;
+        const acknowledged = confirmations.current.get(row.id);
+        const operation = busy?.id === row.id ? busy.kind : acknowledged?.kind;
+        const shownText = acknowledged?.kind === 'edit' ? acknowledged.text : text;
+        const disabled = !queueMutable || busy !== null || editing !== null || !!acknowledged;
+        const sendLabel = formatT(t, running ? 'queue.steer' : 'queue.sendNext');
+        const isActive = focused && !isEditing && index === activeQueueIndex;
+        const canSend = !disabled && (running || index === 0);
+        const editTitle = formatT(t, attachments > 0 ? 'queue.attachmentEdit' : editing !== null ? 'queue.finishEdit' : 'queue.edit');
+        const sendTitle = formatT(t, editing !== null ? 'queue.finishEdit' : running ? 'queue.steerHint' : index === 0 ? 'queue.sendHint' : 'queue.waiting', { n: index });
+        return h('div', {
+          key: 'q:' + String(row.id), 'data-chat-actions-queue-row': '', 'data-queue-id': String(row.id),
+          'data-queue-active': isActive ? 'true' : undefined,
+          'aria-busy': operation ? 'true' : 'false',
+          style: {
+            display: 'flex', flexDirection: 'column', gap: '5px', minWidth: 0, flexShrink: 0, padding: '6px 0',
+            borderTop: '0.5px solid var(--dsw-alias-border-l2, rgba(127,127,127,.16))',
+            ...(isActive ? { outline: '1px solid var(--dsw-alias-label-primary, rgba(127,127,127,.55))', outlineOffset: '-1px', borderRadius: '4px' } : {})
+          }
+        }, isEditing ? editor() : h('div', { style: { display: 'flex', alignItems: 'flex-start', gap: '7px', minWidth: 0 } },
+          h('span', { title: formatT(t, index === 0 ? 'queue.next' : 'queue.position', { n: index + 1 }), style: { color: TOKEN_MUTED, fontSize: '11px', lineHeight: '28px', minWidth: '15px', textAlign: 'center', flex: 'none' } }, String(index + 1)),
+          h('div', { style: { flex: '1 1 auto', minWidth: 0 } },
+            h('button', { type: 'button', className: 'chat-actions-queue-text', 'data-chat-actions-queue-preview': '',
+              'aria-expanded': full, title: formatT(t, full ? 'queue.collapseMessage' : 'queue.expandMessage'),
+              onClick: () => setExpanded(value => value === row.id ? null : row.id)
+            }, h('span', { className: full ? 'chat-actions-queue-full' : 'chat-actions-queue-clamp' }, shownText || formatT(t, 'queue.attachments', { n: attachments }))),
+            blocks.length ? h('div', { style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '5px', marginTop: '3px', color: TOKEN_MUTED } },
+              (full ? images : images.slice(0, MAX_QUEUE_THUMBS)).map((entry, i) => h(QueueThumb, { key: 'img:' + i, attachment: entry.attachment, loadImage, label: formatT(t, 'queue.image'), onOpen: setPreview })),
+              !full && images.length > MAX_QUEUE_THUMBS ? textButton('+' + (images.length - MAX_QUEUE_THUMBS), () => setExpanded(row.id), { quiet: true }) : null,
+              (full ? files : files.slice(0, MAX_QUEUE_THUMBS)).map((entry, i) => h('span', { key: 'file:' + i, className: 'chat-actions-queue-file', title: entry.attachment.name || formatT(t, 'queue.file') }, entry.attachment.name || formatT(t, 'queue.file'))),
+              !full && files.length > MAX_QUEUE_THUMBS ? textButton('+' + (files.length - MAX_QUEUE_THUMBS), () => setExpanded(row.id), { quiet: true }) : null
+            ) : null
+          ),
+          h('span', { className: 'chat-actions-queue-actions', style: { display: 'inline-flex', alignItems: 'center', flex: 'none', gap: '2px' } },
+            control('edit', formatT(t, 'queue.edit'), () => beginEdit(row), {
+              disabled: disabled || attachments > 0 || !text.trim(),
+              title: editTitle + ' (E)',
+              shortcut: !disabled && attachments === 0 && text.trim() ? 'E' : undefined
+            }),
+            control('remove', formatT(t, 'queue.remove'), () => removeRow(row), {
+              disabled,
+              title: formatT(t, 'queue.remove') + ' (Del)',
+              shortcut: disabled ? undefined : 'Delete'
+            }),
+            control('send', sendLabel, () => sendRow(row), {
+              disabled: disabled || (!running && index !== 0),
+              title: sendTitle + (canSend ? ' (Enter)' : ''),
+              shortcut: canSend ? 'Enter' : undefined
             })
-            : h('span', {
-              title: text,
-              style: {
-                flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap', font: FONT
-              }
-            },
-              text === '' ? formatT(t, 'queue.attachments', { n: attachments }) : text,
-              // Images already show as thumbnails; only files still need a count.
-              files.length > 0
-                ? h('span', { style: { opacity: 0.6, marginLeft: '6px' } }, '📎' + files.length)
-                : (attachments > 0 && shownImages.length === 0
-                  ? h('span', { style: { opacity: 0.6, marginLeft: '6px' } }, '📎' + attachments)
-                  : null)
-            ),
-          isEditing
-            ? h('span', { style: { display: 'inline-flex', gap: '4px' } },
-              smallButton(formatT(t, 'queue.save'), saveEdit, { disabled: busy !== null || editing.text.trim() === '' }),
-              smallButton(formatT(t, 'queue.cancel'), () => setEditing(null), { quiet: true, disabled: busy !== null })
-            )
-            : h('span', { style: { display: 'inline-flex', gap: '4px' } },
-              smallButton(formatT(t, 'queue.edit'), () => setEditing({ id: row.id, text: text }), {
-                quiet: true, disabled: !queueMutable || busy !== null || attachments > 0 || text.trim() === '',
-                title: attachments > 0 ? formatT(t, 'queue.attachmentEdit') : formatT(t, 'queue.edit')
-              }),
-              smallButton('🗑', () => removeRow(row), {
-                quiet: true, disabled: !queueMutable || busy !== null, title: formatT(t, 'queue.remove')
-              }),
-              smallButton('↑', () => sendNext(), {
-                disabled: !queueMutable || !isFirst || busy !== null,
-                title: isFirst ? formatT(t, 'queue.sendHint') : formatT(t, 'queue.waiting', { n: index })
-              })
-            )
-        ));
+          )
+        ),
+          operation ? h('div', { role: 'status', 'aria-live': 'polite', 'data-chat-actions-queue-status': '', style: { color: TOKEN_MUTED, paddingInlineStart: '22px' } }, formatT(t, operation === 'edit' ? 'queue.saving' : operation === 'remove' ? 'queue.removing' : running ? 'queue.steering' : 'queue.sending')) : null,
+          errorView(row.id)
+        );
       });
-      for (const item of pending) {
-        rows.push(h('div', {
-          key: 'p:' + String(item.requestId),
-          style: { display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, height: '22px', opacity: 0.65 }
-        },
-          h('span', {
-            style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', font: FONT }
-          }, item.text === ''
-            ? formatT(t, 'queue.attachments', { n: (item.attachments || []).length })
-            : item.text),
-          h('span', { style: { font: FONT } }, formatT(t, 'queue.sending'))
-        ));
-      }
-
+      for (const item of pending) rows.push(h('div', {
+        key: 'p:' + String(item.requestId), 'data-chat-actions-queue-pending': '',
+        style: { display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, flexShrink: 0, padding: '6px 0', color: TOKEN_MUTED }
+      }, h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.text || formatT(t, 'queue.attachments', { n: (item.attachments || []).length })), h('span', { role: 'status' }, formatT(t, 'queue.admitting'))));
+      // A queue claim can race editing. Preserve the unsaved draft even when the
+      // last queue row disappears; never silently throw the user's changes away.
+      const orphanEditor = orphaned ? h('div', { 'data-chat-actions-queue-orphan': '', style: { borderTop: TOKEN_BORDER, paddingTop: '7px' } }, editor(), errorView(editing.id)) : null;
       return h(React.Fragment, null,
         h('div', {
           'data-chat-actions-queue': '',
+          role: 'region',
+          tabIndex: queue.length > 0 ? 0 : -1,
+          'aria-label': formatT(t, 'queue.count', { n: rowCount }) + ' · ' + formatT(t, 'queue.shortcutHelp'),
+          onKeyDown: onPanelKeyDown,
+          // Shortcuts only belong to the strip itself. Focusing a child button
+          // keeps that button's native Enter/Space behaviour, so the hint must
+          // not claim a keyboard mode that is inactive.
+          onFocus: event => { if (event.target === event.currentTarget) setFocused(true); },
+          onBlur: event => { if (event.target === event.currentTarget) setFocused(false); },
           style: {
             boxSizing: 'border-box', minWidth: 0,
             width: 'calc(100% - var(--dsh-composer-side-clearance, 0px) - var(--dsh-composer-side-clearance, 0px))',
             maxWidth: 'var(--dsh-composer-card-max-width, 100%)', marginInline: 'auto',
-            display: 'flex', flexDirection: 'column', gap: '2px', padding: '5px 8px',
+            display: 'flex', flexDirection: 'column', gap: '3px', padding: '6px 9px',
             marginBottom: '6px', borderRadius: 'var(--dsw-radius-md, 8px)',
             background: 'var(--dsw-alias-bg-module-platform, rgba(127,127,127,.08))',
             border: '0.5px solid var(--dsw-alias-border-l2, rgba(127,127,127,.2))',
             font: FONT, color: TOKEN_TEXT
           }
         },
-          h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 } },
-            rowCount > 1
-              ? h('button', {
-                type: 'button',
-                onClick: () => setCollapsed((value) => !value),
-                'aria-expanded': collapsed ? 'false' : 'true',
-                title: formatT(t, 'queue.count', { n: rowCount }),
-                style: {
-                  font: FONT, height: '20px', width: '20px', flex: 'none',
-                  border: 'none', borderRadius: '6px', cursor: 'pointer',
-                  background: 'transparent', color: TOKEN_MUTED
-                }
-              }, collapsed ? '▸' : '▾')
-              : null,
+          h('style', null, QUEUE_CSS),
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: '7px', minWidth: 0, minHeight: '24px' } },
+            queueIcon('clock'),
             h('span', {
-              style: {
-                flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap', font: FONT, opacity: 0.75
-              }
-            }, formatT(t, 'queue.count', { n: rowCount }) + ' · '
-              + formatT(t, busy !== null ? 'queue.updating' : pending.length > 0 && queue.length === 0 ? 'queue.sending' : running ? 'queue.waitingTurn' : 'queue.paused')),
-            smallButton(formatT(t, 'queue.send') + ' ↓', () => sendNext(), {
-              // Always clickable while paused: this is the only path that moves
-              // a paused queue. While a turn runs the host claims it by itself.
-              disabled: !queueMutable || busy !== null || running || queue.length === 0,
-              title: formatT(t, 'queue.sendHint')
-            })
+              style: { flex: '1 1 auto', minWidth: 0, color: TOKEN_MUTED, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+              title: formatT(t, focused && queue.length > 0 ? 'queue.shortcutHelp' : running ? 'queue.autoHint' : 'queue.pausedHint')
+            }, focused && queue.length > 0 && editing === null
+              ? formatT(t, 'queue.shortcuts')
+              : (formatT(t, rowCount === 0 ? 'queue.unsaved' : 'queue.count', { n: rowCount }) + (rowCount ? ' · ' + formatT(t, running ? 'queue.auto' : 'queue.paused') : ''))),
+            rowCount > 1 ? h('button', { type: 'button', 'data-chat-actions-queue-toggle': '',
+              className: 'chat-actions-queue-control', 'aria-expanded': !collapsed,
+              'aria-label': formatT(t, collapsed ? 'queue.expandAll' : 'queue.collapseAll', { n: rowCount }),
+              title: formatT(t, collapsed ? 'queue.expandAll' : 'queue.collapseAll', { n: rowCount }),
+              disabled: editing !== null,
+              onClick: () => { if (editingRef.current === null) setCollapsed(value => !value); }
+            }, queueIcon(collapsed ? 'expand' : 'collapse')) : null
           ),
-          collapsed && rowCount > 1
-            ? null
-            : h('div', {
-              style: { display: 'flex', flexDirection: 'column', gap: '2px', maxHeight: '132px', overflowY: 'auto' }
-            }, rows)
+          h('div', { 'data-chat-actions-queue-list': '', style: { display: 'flex', flexDirection: 'column', maxHeight: 'min(360px, 45vh)', overflowY: 'auto', overscrollBehavior: 'contain', minWidth: 0 } }, collapsed && editing === null ? rows.slice(0, 1) : rows),
+          collapsed && rowCount > 1 && editing === null ? textButton(formatT(t, 'queue.more', { n: rowCount - 1 }), () => setCollapsed(false), { quiet: true, attributes: { 'data-chat-actions-queue-more': '' } }) : null,
+          orphanEditor
         ),
-        preview === null ? null : h(QueueImagePreview, {
-          image: preview,
-          label: formatT(t, 'queue.image'),
-          onClose: () => setPreview(null)
-        })
+        preview === null ? null : h(QueueImagePreview, { image: preview, label: formatT(t, 'queue.image'), onClose: () => setPreview(null) })
       );
     }
 
@@ -1932,7 +2127,7 @@ window.__ModuleLoader__.load({
       const sessions = () => getService('sessions');
 
       /** The UI conversation service resolves a durable attachment to a URL.
-       *  Resolved lazily: the queued-image thumbnails must work even when the
+       *  Resolved lazily: queued-image thumbnails must work even when the
        *  service lands after this plugin. */
       const loadImageFor = (sessionId, attachment) => {
         const uiConversation = getService('uiConversation');
@@ -2370,7 +2565,8 @@ window.__ModuleLoader__.load({
       // Use the native row while running. Paused hosts need a wake prompt; its
       // exact rpcId is registered BEFORE sending, with no pending transcript echo.
       const wakeSession = (sessionId, itemId) => {
-        if (wakeFlights.has(sessionId)) return wakeFlights.get(sessionId);
+        const existing = wakeFlights.get(sessionId);
+        if (existing) return existing.itemId === itemId ? existing.promise : Promise.reject(new Error('queue-operation-in-progress'));
         const flight = Promise.resolve().then(async () => {
           const session = sessionOf(sessionId);
           if (!session?.prompt) throw new Error('session-not-attached');
@@ -2381,6 +2577,9 @@ window.__ModuleLoader__.load({
             if (result?.ok !== true) throw new Error(result?.error?.message || result?.error?.code || 'queue-steer-failed');
             return;
           }
+          // A paused wake can only claim the FIFO head; never pretend a selected
+          // later row was sent if the running state changed before this RPC.
+          if (rows[0]?.id !== itemId) throw new Error('queue-head-required-while-paused');
           if (wakeRequested.has(sessionId)) throw new Error(formatT(t, 'queue.waking'));
           wakeRequested.set(sessionId, { itemId, started: Date.now() });
           const rpcId = newRequestId();
@@ -2400,7 +2599,7 @@ window.__ModuleLoader__.load({
           }
           sweepSentinels();
         }).finally(() => wakeFlights.delete(sessionId));
-        wakeFlights.set(sessionId, flight);
+        wakeFlights.set(sessionId, { itemId, promise: flight });
         return flight;
       };
 
@@ -2439,8 +2638,7 @@ window.__ModuleLoader__.load({
       ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
         name: 'conversation.input.dock',
         // Same cell id as the shipped queue dock: reusing it REPLACES that cell,
-        // so the page shows exactly one queue strip with the thumbnails and the
-        // send-while-paused behaviour, instead of two stacked lists.
+        // so the page shows exactly one queue strip.
         id: 'queue',
         order: 20,
         locale: NS,

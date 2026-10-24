@@ -2,6 +2,8 @@
 
 [中文](#中文) | [English](#english)
 
+仓库：[https://github.com/Anranzero/dsh-chat-actions](https://github.com/Anranzero/dsh-chat-actions)
+
 ---
 
 ## 中文
@@ -68,8 +70,12 @@ dsh plugin --profile desktop add github:Anranzero/dsh-chat-actions
 - **侧聊模型**：输入框下方可选择 DSH 已配置的提供方/模型和该模型支持的推理等级；只影响侧聊。生成时切换用于下一次回复，当前回复仍使用开始时的模型；加载失败可重新加载，也可继续继承原对话模型。
 - **停止侧聊**：生成时发送按钮变为「停止生成」，也可在输入框内按 Esc。停止保留已收到的回答和未发送草稿；旧请求迟到的数据不会继续追加。随后可发送新问题继续讨论。
 - **编辑消息**：悬停你自己发的消息 → 点复制图标右侧的铅笔 → 改完发送，当前会话从这条消息之前继续
-- **排队发送**：让 Agent 跑起来时输入消息（进入排队）→ 停止对话 → 在输入框上方那条队列里点「发送 ↓」或行尾「↑」
-- **排队图片**：排队行直接显示缩略图，点一下开全屏预览（点背景或按 Esc 关闭）
+- **排队面板**：输入框上方显示排队消息，默认展开；每条一行（编号、正文、附件），点正文可展开全文，行尾是三个同款图标按钮：插话/发送、编辑、删除（tooltip 标注动作和快捷键）。
+- **自动发送 / 立即插话**：普通排队消息在本轮任务结束后按顺序发送（含图片和文件附件）。Agent 运行中，行尾箭头把**该条消息**加入当前任务的下一步骤，不要求队首，也**不会中断正在执行的模型请求或工具**；暂停后只允许队首发「发送下一条」，其余仍按 FIFO 保留。
+- **编辑排队消息**：纯文本消息在队列内编辑，不覆盖主输入框草稿；Enter 换行，Ctrl/⌘ + Enter 保存，Esc 取消。原消息已被发送或移除时，未保存的修改仍保留在编辑区，可复制后关闭，不会擅自重发。
+- **删除排队消息**：删除即时生效、没有撤销；RPC 成功但队列投影未更新前该行保持锁定，避免重复提交。
+- **键盘快捷键**：Tab 到队列面板（或点击面板空白处）让它自己持有焦点，标题栏会切换成快捷键提示；此时 `↑`/`↓`（`Home`/`End`）选择消息，`Enter` 发送或插话，`E` 编辑，`Del` 删除，`Esc` 退出。焦点在行内按钮上时保留按钮自己的 Enter/Space，行尾按钮 tooltip 也标出对应按键；`Ctrl/⌘/Alt` 组合键和按键长按不会触发队列操作。
+- **排队图片**：排队行直接显示缩略图，点一下开全屏预览（点背景或按 Esc 关闭）；超过三个的附件可展开查看。
 
 ### 实现要点
 
@@ -78,7 +84,7 @@ dsh plugin --profile desktop add github:Anranzero/dsh-chat-actions
 | 选区浮条 | `conversation.input.dock` 插槽 + `position: fixed` 浮层，滚动/缩放时用 `Range` 重算位置（rAF 合并，隐藏时零开销） |
 | 引用 chip | `ctx.inputTriggers.registerSource({ trigger: '@', codec })` + `conversation.input.for(scope).insertReference()` |
 | 侧边栏 | 插件 Typert Remote + `llm.prepareCall`；只读 Session 快照、无工具流式调用、临时内存历史；停止、关页、断开连接和插件卸载时取消请求 |
-| 排队发送 | 接管宿主 `queue` 单元（不再并列第二条）：`useProjection('inbox')` + 哨兵唤醒宿主领取队首消息（保留附件） |
+| 排队发送 | 接管宿主 `queue` 单元（不再并列第二条）：`useProjection('inbox')` 渲染队列管理器，行级编辑/删除/插话通过 `session.updateQueue`；暂停时用一个哨兵请求唤醒宿主领取队首消息（保留附件），随后清除哨兵 |
 | 编辑消息 | 在宿主操作行内插入按钮（复用宿主 class 保证对齐）+ 内联编辑框；发送时用行的 `data-chat-flow-key` 在会话日志里定位原消息，`sessions.fork({ atSeq: seq - 1 })` 切开后用 `uiWorkspace.openSession` 打开子会话，再把新文字排队发送到子会话 |
 
 ### 本地源码修复与验证
@@ -88,24 +94,26 @@ dsh plugin --profile desktop add github:Anranzero/dsh-chat-actions
 - 停止通过 AbortSignal 中断宿主等待并请求模型流清理；不再依赖提供方主动返回下一段文字。回归覆盖提供方忽略取消、模型切换失败、切换中停止，以及旧操作不会串入新侧聊。
 - 侧聊输入区固定在底部，代码和表格在各自区域横向滚动；向上阅读历史时，新输出不再强制滚回底部。
 - 引用 codec 随 `inputTriggers` 服务就绪、替换和卸载注册/清理，不再只在启动时查一次。注册成功前不会插入无法发送的引用 chip；完整引用文本不降级为摘要。
-- 排队栏复用输入框的最大宽度与两侧留白，居中对齐，不使用固定屏宽。
-- `npm test` 运行服务生命周期、引用全文和排队栏布局约束的回归检查；布局约束检查不代替真实页面的视觉验证。
+- 排队栏复用输入框的最大宽度与两侧留白，居中对齐，不使用固定屏宽；默认展开列表，键盘操作只在面板自身聚焦时生效，避免与输入框的 Enter/Delete 冲突。
+- `npm test` 运行服务生命周期、引用全文、队列编辑/删除/插话和键盘快捷键的回归检查；这些检查不代替真实页面的视觉验证。
 - 宿主入口检查直接导入 `index.js`，并在真实 Cordis 容器中检查侧聊服务的注册与卸载，覆盖缺少宿主 SDK 依赖导致整个插件无法启用的问题；不发送模型请求。
 - 本地修复请从这个源码目录安装，保留工作副本；重新安装 GitHub 版本不会自动包含尚未提交到上游的本地改动。
 - 引用入口沿用 `dsh-quote-followup` 的原生引用插入方式；侧聊复用前述只读实现，宿主 SDK 依赖由包管理器安装。
 - 编辑已发送消息采用排队模式，失败会清理发送中的占位；只读侧聊不提供原生 Agent 消息编辑入口。
-- 暂停队列使用独立请求 ID 唤醒，订阅队列投影清理迟到标记，并防止重复点击；不删除再重建原排队消息，保留图片和文件。
+- 暂停队列使用独立请求 ID 唤醒队首，订阅队列投影清理迟到标记，并防止重复点击；不删除再重建原排队消息，保留图片和文件。
+- 队列快捷键绑定在面板焦点内（Tab 或点击进入），不做全局监听：输入框里的 Enter、Delete 和字符 E 仍属于主编辑器。
 - 回归检查覆盖引用来源定位、跨会话保护、侧聊上下文边界、流式停止/释放、失败重试和队列唤醒；另以宿主自带 SDK 核对流式格式与服务注册。这些检查不代替桌面实测。
 
 ### 已知限制
 
-- 排队消息按 FIFO 发送，暂停时只能发队首
+- 自动发送按 FIFO；暂停时只能恢复队首，其余行仍需等下一轮。删除没有撤销，含附件的消息不能编辑。
+- 宿主在轮次边界才领取排队消息，与 ZCode CLI 的「下一次工具调用后提交」是不同运行时语义。
+- 队列快捷键只在面板聚焦时生效，不是全局快捷键；输入框内的 Enter/Delete/E 仍归主编辑器。
 - 会话日志是 append-only，宿主不提供原地改写：编辑消息时用 `atSeq: seq - 1` fork 出子会话（切点在这条消息之前），把新文字先发进子会话，成功后切到子会话并**归档**原会话，所以列表里仍只有一条对话、名字不变，原消息及其后的回复不再出现；旧版本在归档里，可恢复
 - 编辑后跟随原消息的回复也会一起离开当前视图（与宿主的分支行为一致）
 - 会话第一条消息无法“切在它之前”（没有更早的事件可用），此时编辑会明确报错并保留原消息，不会追加一条重复的可见消息
 - 若宿主缺少归档接口（旧版本），编辑仍会成功，但列表里会暂时多出一条原会话
 - 编辑框不保留原消息的附件
-- 含附件的排队消息不开放编辑，避免宿主的纯文本替换接口丢弃附件；仍可直接发送或删除。
 - 侧聊是临时只读讨论，不运行工具或编辑文件；上下文只读到所选消息所在轮次结束，不自动跟随后续主聊。原消息的思考过程与附件字节不传给侧聊，超限会明确拒绝而不静默截断。
 - 侧聊历史只在内存中保留；关闭、新侧聊、重启或空闲过期后清理。需要保留的内容请先「添加到对话」；草稿忙碌时插入失败会提示重试。
 - 当前宿主没有单独的恢复队列接口，暂停发送仍需临时唤醒请求；实际桌面上的中断/延迟时序需要验收。
@@ -187,20 +195,25 @@ honours the `DSH_HOME` environment variable.
 - **Side Chat model**: select a configured model and supported reasoning effort below the input. Choices affect Side Chat only and apply to the next reply. The parent model remains the default until an explicit choice.
 - **Stop**: click the active Stop button or press Escape in the input. Partial replies and unsent drafts remain available; late chunks are discarded. Model changes in progress do not disable Stop.
 - **Edit**: hover your own message → pencil next to the copy icon
-- **Queue**: type while the agent runs (message is queued) → stop the agent → click "Send ↓" in the queue strip above the composer, or the "↑" at a row's end
-- **Queued images**: rows show thumbnails; click one for a full-size preview (click the backdrop or press Escape to close)
+- **Queue**: a queue manager above the composer, expanded by default; each row shows its number, text and attachments, the text expands in place, and the row ends with three matching icon buttons — send/steer, edit and remove — whose tooltips name the action and its key.
+- **Automatic send / steer**: queued messages submit in FIFO order once the current turn ends, attachments included. While the agent runs, a row's arrow steers **that item** into the next step without cancelling the active model request or tool; while paused only the FIFO head can be sent.
+- **Queue edit**: pure-text rows edit in place without touching the composer draft. Enter inserts a newline, Ctrl/⌘ + Enter saves, Esc cancels. If the row leaves the queue, unsaved changes stay available to copy and are never resent automatically.
+- **Queue removal**: removal is immediate and has no undo; a row stays locked after the RPC until the queue projection confirms it.
+- **Queue shortcuts**: Tab onto the strip (or click its blank area) so the strip itself owns focus; its header then shows the shortcut hint. `↑`/`↓` (`Home`/`End`) select a row, `Enter` sends or steers, `E` edits, `Del` removes, `Esc` leaves. When focus sits on an inner button that button keeps its native Enter/Space, and button tooltips name the key. Modifier chords and held keys never trigger queue actions.
+- **Queued images**: rows show thumbnails; click one for a full-size preview (click the backdrop or press Escape to close).
 
 ### Known limitations
 
-- Queued messages send in FIFO order; only the head can be sent while paused
+- Automatic send is FIFO; only the head can be resumed while paused, and rows with attachments cannot be edited. Removal has no undo.
+- This Host claims queued messages at a turn boundary; ZCode's CLI "submitted after the next tool call" is a different runtime semantic.
+- Queue shortcuts are scoped to a focused panel, not global: Enter/Delete/E inside the composer still belong to the main editor.
 - The session log is append-only and the host offers no in-place rewrite: editing forks a child session at `atSeq: seq - 1`, sends the new text into it first, then switches to it and **archives** the pre-edit session, so the list still shows one conversation under the same name and the message plus its later replies are gone. The previous version stays recoverable in the archive
 - Replies that followed the edited message leave the current view with it (same as the host's own branch behaviour)
 - The first message of a session cannot be cut away (no earlier event exists); editing it reports a clear error and keeps the message instead of appending a duplicate
 - Without a host archive API (older builds) the edit still works, but the list shows the pre-edit session as an extra entry
 - The editor does not carry over the original message's attachments
-- Queued messages with attachments cannot be edited because the host's text-only edit API would drop attachments; sending and removal remain available
 - Side chats freeze context through the selected completed turn; later parent messages, parent reasoning and attachment bytes are excluded. They have no tools and remain in memory only. Oversized context is rejected explicitly.
-- Paused queue recovery still uses a temporary wake request because this host has no dedicated resume endpoint; desktop timing remains to be verified
+- Paused queue recovery still uses a temporary wake request for the FIFO head because this host has no dedicated resume endpoint. Desktop timing remains to be verified
 
 ### License
 

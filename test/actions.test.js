@@ -6,7 +6,7 @@ import { SIDE_CHAT_INVOCATIONS } from '../side-chat/typert.js';
 
 const source = readFileSync(new URL('../client.js', import.meta.url), 'utf8');
 
-function setup({ rows = [], running = false, prompt, create, ready, input, events = [], fork, chat, directory, rpc } = {}) {
+function setup({ rows = [], running = false, prompt, create, ready, input, events = [], fork, chat, directory, rpc, steer } = {}) {
   let definition;
   let codec;
   const slots = new Map();
@@ -20,7 +20,8 @@ function setup({ rows = [], running = false, prompt, create, ready, input, event
     projections: { faceOf: () => inbox },
     beginSubmission: () => ({ requestId: 'submission-id', abandon: () => calls.push(['abandon']) }),
     prompt: async (...args) => { calls.push(['prompt', ...args]); return prompt ? prompt(...args) : { ok: true }; },
-    updateQueue: async (...args) => { calls.push(['updateQueue', ...args]); return { ok: true }; }
+    updateQueue: async (...args) => { calls.push(['updateQueue', ...args]); return steer ? steer(...args) : { ok: true }; },
+    cancel: async (...args) => { calls.push(['cancel', ...args]); }
   };
   // The Client session face exposes committed events only through the binding's window.
   const eventSource = { getSnapshot: () => ({ entries: events.map((event) => ({ type: 'event', event })), hasMore: false, revision: 1 }) };
@@ -84,6 +85,8 @@ function setup({ rows = [], running = false, prompt, create, ready, input, event
     codec, plugin, slots, calls,
     tick: async () => { for (const fn of timers) fn(); await new Promise(setImmediate); },
     arrive: (row) => { rows.push(row); for (const fn of subscriptions) fn(); },
+    project: (next) => { rows = next; for (const fn of subscriptions) fn(); },
+    setRunning: (value) => { running = value; },
     wake: (id = 'queued') => slots.get('queue').inject('main').wakeQueue(id),
     tools: slots.get('chat-actions-tools').inject('main'),
     renderAsk: (props) => { cursor = 0; return slots.get('dsh-chat-actions/ask').view(props); },
@@ -207,6 +210,80 @@ test('running queue sends its existing row through native steering', async () =>
   assert.equal(action?.[1], 'queued');
   assert.equal(action?.[2].kind, 'steer');
   assert.equal(app.calls.some((call) => call[0] === 'prompt'), false);
+  app.dispose();
+});
+
+test('running non-head queue steering preserves selected ID and never cancels the current turn', async () => {
+  const first = { id: 'first', content: [{ type: 'text', text: 'FIFO head' }] };
+  const second = { id: 'second', content: [{ type: 'image', attachment: { attachmentId: 'preserve-me' } }] };
+  const app = setup({ running: true, rows: [first, second] });
+  await app.wake('second');
+  const action = app.calls.find(call => call[0] === 'updateQueue');
+  assert.equal(action?.[1], 'second');
+  assert.equal(action?.[2].kind, 'steer');
+  assert.equal(second.content[0].attachment.attachmentId, 'preserve-me');
+  assert.equal(app.calls.some(call => ['prompt', 'remove', 'cancel'].includes(call[0])), false);
+  app.dispose();
+});
+
+test('paused queue rejects a non-head ID before prompting, even if the row was selected while running', async () => {
+  const rows = ['first', 'second'].map(id => ({ id, content: [{ type: 'text', text: id }] }));
+  const app = setup({ running: true, rows });
+  const selectedWhileRunning = app.wake('second');
+  app.setRunning(false);
+  await assert.rejects(selectedWhileRunning, /queue-head-required-while-paused/);
+  assert.equal(app.calls.some(call => ['prompt', 'updateQueue', 'remove', 'cancel'].includes(call[0])), false);
+  await app.wake('first');
+  assert.equal(app.calls.filter(call => call[0] === 'prompt').length, 1);
+  app.dispose();
+});
+
+test('missing queue IDs never start a wake or a steering action', async () => {
+  for (const running of [false, true]) {
+    const app = setup({ running, rows: [{ id: 'existing', content: [{ type: 'text', text: 'keep' }] }] });
+    await assert.rejects(app.wake('gone'), /queue-item-not-found/);
+    assert.equal(app.calls.some(call => ['prompt', 'updateQueue', 'remove', 'cancel'].includes(call[0])), false);
+    app.dispose();
+  }
+});
+
+test('a queued row disappearing before wake dispatch is not recreated or replaced with another row', async () => {
+  const app = setup({ running: true, rows: [{ id: 'queued', content: [{ type: 'text', text: 'gone soon' }] }] });
+  const flight = app.wake('queued');
+  app.project([{ id: 'other', content: [{ type: 'text', text: 'leave me queued' }] }]);
+  await assert.rejects(flight, /queue-item-not-found/);
+  assert.equal(app.calls.some(call => ['prompt', 'updateQueue', 'remove', 'cancel'].includes(call[0])), false);
+  app.dispose();
+});
+
+test('same-ID in-flight steering shares its promise but different IDs cannot inherit its success', async () => {
+  let finish;
+  const app = setup({ running: true,
+    rows: ['first', 'second'].map(id => ({ id, content: [{ type: 'text', text: id }] })),
+    steer: () => new Promise(resolve => { finish = resolve; })
+  });
+  const first = app.wake('first');
+  assert.equal(app.wake('first'), first);
+  await assert.rejects(app.wake('second'), /queue-operation-in-progress/);
+  assert.equal(app.calls.filter(call => call[0] === 'updateQueue').length, 1);
+  finish({ ok: true }); await first;
+  const second = app.wake('second');
+  await new Promise(setImmediate);
+  finish({ ok: true }); await second;
+  assert.deepEqual(app.calls.filter(call => call[0] === 'updateQueue').map(call => call[1]), ['first', 'second']);
+  assert.equal(app.calls.some(call => ['prompt', 'remove', 'cancel'].includes(call[0])), false);
+  app.dispose();
+});
+
+test('steering failure propagates and a retry targets the same native queued item', async () => {
+  let attempts = 0;
+  const app = setup({ running: true, rows: [{ id: 'queued', content: [{ type: 'text', text: 'keep' }] }],
+    steer: async () => ++attempts === 1 ? { ok: false, error: { code: 'temporarily-unavailable' } } : { ok: true }
+  });
+  await assert.rejects(app.wake(), /temporarily-unavailable/);
+  await app.wake();
+  assert.deepEqual(app.calls.filter(call => call[0] === 'updateQueue').map(call => call[1]), ['queued', 'queued']);
+  assert.equal(app.calls.some(call => ['prompt', 'remove', 'cancel'].includes(call[0])), false);
   app.dispose();
 });
 
